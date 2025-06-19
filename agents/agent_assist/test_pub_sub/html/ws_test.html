@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>WebSocket Test</title>
+</head>
+<body>
+  <h1>Live WebSocket Transcription Test</h1>
+
+  <label for="roomInput">Enter Room ID:</label>
+  <input type="text" id="roomInput" placeholder="e.g. room1">
+  <button onclick="connectWS()">Connect</button>
+  <button onclick="disconnectWS()">Disconnect</button>
+
+  <h2>Status & Logs:</h2>
+  <pre id="log" style="background:#f0f0f0; padding:10px; max-height:300px; overflow-y:auto;"></pre>
+
+  <script>
+    let ws;
+
+    const log = (msg) => {
+      const logEl = document.getElementById("log");
+      logEl.textContent += msg + "\n";
+      logEl.scrollTop = logEl.scrollHeight;
+    };
+
+    function connectWS() {
+      const roomId = document.getElementById("roomInput").value;
+      if (!roomId) {
+        log("⚠️ Please enter a room ID.");
+        return;
+      }
+
+      const url = `ws://sbi.vaaniresearch.com:1248/ws/${roomId}`;
+      log(`🔌 Connecting to ${url} ...`);
+
+      ws = new WebSocket(url);
+
+      ws.onopen = () => log("✅ WebSocket connected.");
+      ws.onmessage = (event) => log("📨 Received: " + event.data);
+      ws.onerror = (err) => log("❌ WebSocket error: " + JSON.stringify(err));
+      ws.onclose = () => log("🔌 WebSocket disconnected.");
+    }
+
+    function disconnectWS() {
+      if (ws) {
+        ws.close();
+        log("🔴 Manually disconnected WebSocket.");
+        ws = null;
+      } else {
+        log("⚠️ No active WebSocket connection.");
+      }
+    }
+  </script>
+</body>
+</html>

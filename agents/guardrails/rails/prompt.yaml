@@ -1,0 +1,28 @@
+# Rails configuration - specifies which validators to run on input
+# This matches your existing format
+
+rails:
+  input:
+    - check_input_safety
+    # Add additional validators as needed:
+    # - check_harmful_content
+    # - check_personal_info
+
+# You can also configure output validation if needed
+  # output:
+  #   - check_output_safety
+
+# Optional: Configuration for different validation modes
+validation_modes:
+  strict:
+    input:
+      - check_input_safety
+      - check_harmful_content
+      - check_personal_info
+  
+  basic:
+    input:
+      - check_input_safety
+  
+  lenient:
+    input: []

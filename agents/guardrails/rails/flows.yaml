@@ -1,0 +1,32 @@
+# Flow definitions for handling validation failures
+# This matches your existing format
+
+flows:
+  - name: unsafe_input_flow
+    steps:
+      - condition: "{{ not validate('check_input_safety') }}"
+        then:
+          - say: "{{ fail_message('check_input_safety') }}"
+
+  # Additional flows for other validators
+  - name: harmful_content_flow
+    steps:
+      - condition: "{{ not validate('check_harmful_content') }}"
+        then:
+          - say: "{{ fail_message('check_harmful_content') }}"
+
+  - name: personal_info_flow
+    steps:
+      - condition: "{{ not validate('check_personal_info') }}"
+        then:
+          - say: "{{ fail_message('check_personal_info') }}"
+
+  # Combined flow for multiple validators
+  - name: comprehensive_safety_flow
+    steps:
+      - condition: "{{ not validate('check_input_safety') or not validate('check_harmful_content') }}"
+        then:
+          - say: "Your message contains content that violates our safety guidelines."
+      - condition: "{{ not validate('check_personal_info') }}"
+        then:
+          - say: "{{ fail_message('check_personal_info') }}"

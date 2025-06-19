@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Conversation Viewer</title>
+</head>
+<body>
+  <h1>Conversation Transcript / Live View</h1>
+
+  <label for="convInput">Enter Conversation ID:</label>
+  <input type="text" id="convInput" placeholder="e.g. room1 or ended123">
+  <button onclick="submitConversation()">Submit</button>
+
+  <h2>Output:</h2>
+  <pre id="output" style="background:#f0f0f0; padding:10px; max-height:300px; overflow-y:auto;"></pre>
+
+  <script>
+    let ws;
+
+    const log = (msg) => {
+      const el = document.getElementById("output");
+      el.textContent += msg + "\n";
+      el.scrollTop = el.scrollHeight;
+    };
+
+    function submitConversation() {
+      const convId = document.getElementById("convInput").value.trim();
+      if (!convId) {
+        log("⚠️ Please enter a conversation ID.");
+        return;
+      }
+
+      document.getElementById("output").textContent = "";  // Clear previous logs
+
+      fetch(`http://sbi.vaaniresearch.com:8002/api/${convId}`)
+        .then(response => response.json())
+        .then(data => {
+          if (data.status === "ended") {
+            log("📜 Transcript:");
+            log(data.transcript);
+          } else if (data.status === "live") {
+            const wsUrl = `ws://sbi.vaaniresearch.com:1248/ws/${data.room_id}`;
+            log(`🔌 Connecting to WebSocket at ${wsUrl}`);
+
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => log("✅ WebSocket connected.");
+            ws.onmessage = (event) => log("📨 Received: " + event.data);
+            ws.onerror = (err) => log("❌ WebSocket error: " + JSON.stringify(err));
+            ws.onclose = () => log("🔌 WebSocket disconnected.");
+          } else {
+            log("⚠️ Unknown status received.");
+          }
+        })
+        .catch(err => {
+          console.error(err);
+          log("❌ Failed to fetch conversation status.");
+        });
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,43 @@
+# Custom Guardrails Configuration
+# This matches your existing format
+
+validators:
+  - name: check_input_safety
+    type: regex
+    parameters:
+      patterns:
+        - ".*fuck.*"
+        - ".*shit.*"
+        - ".*kill.*"
+        - ".*your mom.*"
+        - ".*credit card.*"
+      ignore_case: true
+    on_fail:
+      message: "I'm sorry, but that message isn't allowed."
+
+  # Additional validators you can add
+  - name: check_harmful_content
+    type: regex
+    parameters:
+      patterns:
+        - ".*hack.*"
+        - ".*bypass.*"
+        - ".*exploit.*"
+        - ".*malware.*"
+        - ".*virus.*"
+      ignore_case: true
+    on_fail:
+      message: "I cannot assist with potentially harmful activities."
+
+  - name: check_personal_info
+    type: regex
+    parameters:
+      patterns:
+        - ".*password.*"
+        - ".*api[_\\s]*key.*"
+        - ".*social\\s*security.*"
+        - ".*ssn.*"
+        - ".*phone\\s*number.*"
+      ignore_case: true
+    on_fail:
+      message: "I cannot help with requests involving personal information."

@@ -1,0 +1,10 @@
+client_name: graytitude
+record_conversation: False
+transcribe_conversation: False
+welcome_msg: True
+webrtc_call: False
+rag: False
+cloud: True
+plivo: False
+
+TTS: elevenlabs # elevenlabs/cartesia/aws/neuphonic - azure/playai is not working currently.

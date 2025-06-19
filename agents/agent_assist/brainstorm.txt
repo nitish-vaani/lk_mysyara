@@ -1,0 +1,20 @@
+Typical call flow:
+Incoming:
+--> Agent joins, transcriber joins and the user starts talking to the agent, the calls table is updated as call_ongoing
+        --> Transcriber keeps publishing the data to redis which can be consumed by a websocket
+
+--> User asks for a human agent; the main_agent does a llm_call
+        --> With the help of dispatch agent and the room_id(from context) it tries to add the human agent
+                -- Scenario 1 -> Agent could not be connected
+                        -> Main agent tells the user that the agent could not be connected and it is retrying..
+                        -> After 3 retries, if nobody picks, apologize to the user and sends a email report/ whatsapp to the supervisor.
+
+                -- Scenario 2 -> Agent is connected, how? (participant joined event)
+                        -> Main agent briefs the human agent and then hangs up after 30 sec. (How?) (participant joined event)
+                        -> Transcriber agent is transcribing everyting in the same pub-sub model.
+                        -> Another intelligent agent joins the room who gives assistance to the human agent. Transcriber starts transcribing it as well.
+
+--> User is satisfied and then casually hangs up, the human agent then hangs up and then the agents leave the room.
+
+Outbound:
+--> lk dispatch creates an outbound call.
