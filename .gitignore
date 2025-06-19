@@ -6,7 +6,8 @@
 
 # dotenv environment files
 .env
-.env.*.local
+.env*.local
+.env.local.backup
 
 # misc
 .DS_Store
@@ -19,4 +20,4 @@
 # local test coverage and cache
 coverage/
 .cache/
-agents/.env.local
+

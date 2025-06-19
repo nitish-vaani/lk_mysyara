@@ -1,0 +1,35 @@
+# LiveKit Metrics Configuration - CUSTOMIZED for your environment
+enabled: true
+agent_name: "outbound-caller"
+
+# Redis Configuration - CUSTOMIZED for your setup
+redis_host: "sbi.vaaniresearch.com"
+redis_port: 6379
+redis_db: 15  # Using DB 15 to avoid conflicts with your pub-sub
+
+# Database (disabled for quick start)
+database_enabled: false
+
+# Monitoring - CUSTOMIZED for your available ports
+monitoring_enabled: true
+monitoring_port: 1234  # Using your available port
+monitoring_host: "0.0.0.0"
+
+# Collection Settings
+collect_system_metrics: true
+collect_call_metrics: true
+system_metrics_interval: 30
+
+# Performance Thresholds for 500 calls
+cpu_warning_threshold: 70.0
+cpu_critical_threshold: 85.0
+memory_warning_threshold: 75.0
+memory_critical_threshold: 90.0
+
+# Load Testing Configuration
+max_concurrent_calls: 50
+target_calls_for_test: 500
+
+# Logging
+log_level: "INFO"
+detailed_logging: false
