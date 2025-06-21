@@ -1,26 +1,54 @@
-agent_name: outbound-caller
-client_name: default_client
+# agent_name: outbound-caller
+# client_name: default_client
+# enabled: true
+# load_test:
+#   call_failure_rate_threshold: 50.0
+#   call_gap_seconds: 1.0
+#   client_name: default_client
+#   cpu_failure_threshold: 95.0
+#   csv_file_path: test_data/call_list.csv
+#   enable_failure_recovery: true
+#   generate_detailed_report: true
+#   initial_concurrent_calls: 2
+#   max_call_duration_seconds: 300
+#   max_concurrent_calls: 20
+#   memory_failure_threshold: 95.0
+#   min_recovery_concurrency: 1
+#   ramp_interval_minutes: 3
+#   ramp_step: 2
+#   recovery_concurrency_reduction: 2
+#   reports_directory: reports
+#   test_name: load_test_20250620_060458
+#   use_natural_call_duration: true
+# monitoring_port: 1234
+# redis_db: 15
+# redis_host: sbi.vaaniresearch.com
+# redis_port: 6379
+
+agent_name: enhanced-agent-1
+client_name: your_company_name
 enabled: true
-load_test:
-  call_failure_rate_threshold: 50.0
-  call_gap_seconds: 1.0
-  client_name: default_client
-  cpu_failure_threshold: 95.0
-  csv_file_path: test_data/call_list.csv
-  enable_failure_recovery: true
-  generate_detailed_report: true
-  initial_concurrent_calls: 2
-  max_call_duration_seconds: 300
-  max_concurrent_calls: 20
-  memory_failure_threshold: 95.0
-  min_recovery_concurrency: 1
-  ramp_interval_minutes: 3
-  ramp_step: 2
-  recovery_concurrency_reduction: 2
-  reports_directory: reports
-  test_name: load_test_20250620_060458
-  use_natural_call_duration: true
-monitoring_port: 1234
-redis_db: 15
 redis_host: sbi.vaaniresearch.com
 redis_port: 6379
+redis_db: 15
+monitoring_port: 1234
+
+load_test:
+  initial_concurrent_calls: 3
+  max_concurrent_calls: 15
+  ramp_step: 2
+  ramp_interval_minutes: 3
+  use_natural_call_duration: true
+  max_call_duration_seconds: 300
+  call_gap_seconds: 2.0
+  enable_failure_recovery: true
+  recovery_concurrency_reduction: 2
+  min_recovery_concurrency: 1
+  cpu_failure_threshold: 95.0
+  memory_failure_threshold: 95.0
+  call_failure_rate_threshold: 50.0
+  csv_file_path: test_data/call_list.csv
+  client_name: your_company_name
+  test_name: enhanced_load_test
+  reports_directory: reports
+  generate_detailed_report: true

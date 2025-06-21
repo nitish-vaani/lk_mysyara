@@ -1,0 +1,755 @@
+# monitoring/enhanced_dashboard.py - Enhanced Dashboard for Load Testing
+
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
+import json
+import redis.asyncio as redis
+from datetime import datetime
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+from config.enhanced_metrics_config import EnhancedMetricsConfig
+import logging
+
+logger = logging.getLogger("enhanced_dashboard")
+
+app = FastAPI(
+    title="Enhanced LiveKit Load Testing Dashboard",
+    description="Advanced metrics and load testing monitoring",
+    version="2.0.0"
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+config = EnhancedMetricsConfig.from_yaml()
+redis_client = None
+
+@app.on_event("startup")
+async def startup():
+    global redis_client
+    try:
+        redis_client = redis.Redis(
+            host=config.redis_host,
+            port=config.redis_port,
+            db=config.redis_db,
+            decode_responses=True
+        )
+        await redis_client.ping()
+        logger.info(f"✅ Enhanced dashboard connected to Redis")
+    except Exception as e:
+        logger.error(f"❌ Redis connection failed: {e}")
+
+@app.on_event("shutdown")
+async def shutdown():
+    if redis_client:
+        await redis_client.close()
+
+@app.get("/health")
+async def health():
+    return {"status": "healthy", "timestamp": datetime.now()}
+
+@app.get("/api/enhanced-status")
+async def get_enhanced_status():
+    """Get enhanced system status with detailed load testing metrics"""
+    if not redis_client:
+        raise HTTPException(status_code=503, detail="Redis unavailable")
+    
+    try:
+        # Get all enhanced metrics
+        call_keys = await redis_client.keys("enhanced_metrics:call:*")
+        active_calls = []
+        total_calls = 0
+        
+        for key in call_keys:
+            call_data = await redis_client.get(key)
+            if call_data:
+                call = json.loads(call_data)
+                total_calls += 1
+                
+                if call.get("status") == "active":
+                    current_time = datetime.now().timestamp()
+                    duration = current_time - call["start_time"]
+                    
+                    # Calculate real-time metrics
+                    llm_calls = len(call.get('llm_metrics', []))
+                    tts_calls = len(call.get('tts_metrics', []))
+                    asr_calls = len(call.get('asr_metrics', []))
+                    
+                    # Calculate average latencies
+                    llm_metrics = call.get('llm_metrics', [])
+                    avg_ttft = sum(m['ttft'] for m in llm_metrics) / max(1, len(llm_metrics))
+                    
+                    user_latencies = call.get('user_latency_metrics', [])
+                    avg_user_latency = sum(m['latency'] for m in user_latencies) / max(1, len(user_latencies))
+                    
+                    active_calls.append({
+                        "call_id": call["call_id"],
+                        "client_name": call["client_name"],
+                        "phone_number": call.get("phone_number", ""),
+                        "duration_seconds": round(duration, 1),
+                        "duration_minutes": round(duration / 60, 2),
+                        "llm_calls": llm_calls,
+                        "tts_calls": tts_calls,
+                        "asr_calls": asr_calls,
+                        "avg_ttft": round(avg_ttft, 3),
+                        "avg_user_latency": round(avg_user_latency, 3),
+                        "interactions_per_minute": round((llm_calls + tts_calls) / max(1, duration/60), 1),
+                        "status_health": "healthy" if avg_ttft < 2.0 and duration < 600 else "warning"
+                    })
+        
+        # Get completed calls for statistics
+        completed_data = await redis_client.lrange("enhanced_metrics:completed_calls", 0, -1)
+        completed_calls = []
+        
+        if completed_data:
+            for call_json in completed_data[-50:]:  # Last 50 calls
+                call = json.loads(call_json)
+                completed_calls.append(call)
+        
+        # Calculate aggregate statistics
+        total_active = len(active_calls)
+        total_completed = len(completed_calls)
+        
+        # Performance stats from completed calls
+        if completed_calls:
+            successful_calls = [c for c in completed_calls if c.get('status') == 'completed']
+            success_rate = (len(successful_calls) / len(completed_calls)) * 100
+            
+            # Calculate averages
+            avg_duration = sum((c.get('end_time', c['start_time']) - c['start_time']) for c in successful_calls) / max(1, len(successful_calls))
+            
+            all_llm_metrics = []
+            all_user_latencies = []
+            total_interactions = 0
+            
+            for call in completed_calls:
+                llm_metrics = call.get('llm_metrics', [])
+                all_llm_metrics.extend([m['ttft'] for m in llm_metrics])
+                
+                user_metrics = call.get('user_latency_metrics', [])
+                all_user_latencies.extend([m['latency'] for m in user_metrics])
+                
+                total_interactions += len(call.get('llm_metrics', [])) + len(call.get('tts_metrics', []))
+            
+            avg_ttft = sum(all_llm_metrics) / max(1, len(all_llm_metrics))
+            avg_user_latency = sum(all_user_latencies) / max(1, len(all_user_latencies))
+            
+        else:
+            success_rate = 0
+            avg_duration = 0
+            avg_ttft = 0
+            avg_user_latency = 0
+            total_interactions = 0
+        
+        return {
+            "timestamp": datetime.now(),
+            "load_test_status": {
+                "active_calls": total_active,
+                "total_calls_processed": total_completed,
+                "max_concurrent": config.load_test.max_concurrent_calls,
+                "utilization_percent": round((total_active / config.load_test.max_concurrent_calls) * 100, 1),
+                "target_calls": config.load_test.initial_concurrent_calls,
+            },
+            "performance_summary": {
+                "success_rate": round(success_rate, 1),
+                "avg_call_duration": round(avg_duration, 1),
+                "avg_ttft_seconds": round(avg_ttft, 3),
+                "avg_user_latency_seconds": round(avg_user_latency, 3),
+                "total_interactions": total_interactions
+            },
+            "active_calls": active_calls,
+            "system_health": {
+                "redis_connected": True,
+                "enhanced_metrics_enabled": True,
+                "client_name": config.client_name,
+                "agent_name": config.agent_name
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting enhanced status: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get enhanced status")
+
+@app.get("/api/load-test-analytics")
+async def get_load_test_analytics():
+    """Get detailed load test analytics and trends"""
+    if not redis_client:
+        raise HTTPException(status_code=503, detail="Redis unavailable")
+    
+    try:
+        # Get completed calls data
+        completed_data = await redis_client.lrange("enhanced_metrics:completed_calls", 0, -1)
+        
+        if not completed_data:
+            return {"message": "No load test data available"}
+        
+        calls = [json.loads(call) for call in completed_data]
+        
+        # Time-based analysis
+        now = datetime.now().timestamp()
+        last_hour_calls = [c for c in calls if (now - c['start_time']) < 3600]
+        last_24h_calls = [c for c in calls if (now - c['start_time']) < 86400]
+        
+        # Performance trends
+        performance_trends = {
+            "hourly": {
+                "total_calls": len(last_hour_calls),
+                "success_rate": len([c for c in last_hour_calls if c.get('status') == 'completed']) / max(1, len(last_hour_calls)) * 100,
+                "avg_ttft": 0,
+                "avg_user_latency": 0
+            },
+            "daily": {
+                "total_calls": len(last_24h_calls),
+                "success_rate": len([c for c in last_24h_calls if c.get('status') == 'completed']) / max(1, len(last_24h_calls)) * 100,
+                "avg_ttft": 0,
+                "avg_user_latency": 0
+            }
+        }
+        
+        # Calculate performance metrics for trends
+        for period, data in [("hourly", last_hour_calls), ("daily", last_24h_calls)]:
+            if data:
+                all_ttft = []
+                all_user_latencies = []
+                
+                for call in data:
+                    llm_metrics = call.get('llm_metrics', [])
+                    all_ttft.extend([m['ttft'] for m in llm_metrics])
+                    
+                    user_metrics = call.get('user_latency_metrics', [])
+                    all_user_latencies.extend([m['latency'] for m in user_metrics])
+                
+                performance_trends[period]["avg_ttft"] = round(sum(all_ttft) / max(1, len(all_ttft)), 3)
+                performance_trends[period]["avg_user_latency"] = round(sum(all_user_latencies) / max(1, len(all_user_latencies)), 3)
+        
+        # Client breakdown
+        client_stats = {}
+        for call in calls:
+            client = call.get('client_name', 'unknown')
+            if client not in client_stats:
+                client_stats[client] = {"calls": 0, "success": 0}
+            
+            client_stats[client]["calls"] += 1
+            if call.get('status') == 'completed':
+                client_stats[client]["success"] += 1
+        
+        # Performance distribution
+        all_ttft = []
+        all_user_latencies = []
+        call_durations = []
+        
+        for call in calls:
+            if call.get('end_time'):
+                call_durations.append(call['end_time'] - call['start_time'])
+            
+            llm_metrics = call.get('llm_metrics', [])
+            all_ttft.extend([m['ttft'] for m in llm_metrics])
+            
+            user_metrics = call.get('user_latency_metrics', [])
+            all_user_latencies.extend([m['latency'] for m in user_metrics])
+        
+        # Performance percentiles
+        def percentile(data, p):
+            if not data:
+                return 0
+            sorted_data = sorted(data)
+            index = int(len(sorted_data) * p / 100)
+            return sorted_data[min(index, len(sorted_data) - 1)]
+        
+        return {
+            "timestamp": datetime.now(),
+            "performance_trends": performance_trends,
+            "client_breakdown": client_stats,
+            "performance_distribution": {
+                "ttft_percentiles": {
+                    "p50": round(percentile(all_ttft, 50), 3),
+                    "p90": round(percentile(all_ttft, 90), 3),
+                    "p95": round(percentile(all_ttft, 95), 3),
+                    "p99": round(percentile(all_ttft, 99), 3)
+                },
+                "user_latency_percentiles": {
+                    "p50": round(percentile(all_user_latencies, 50), 3),
+                    "p90": round(percentile(all_user_latencies, 90), 3),
+                    "p95": round(percentile(all_user_latencies, 95), 3),
+                    "p99": round(percentile(all_user_latencies, 99), 3)
+                },
+                "call_duration_percentiles": {
+                    "p50": round(percentile(call_durations, 50), 1),
+                    "p90": round(percentile(call_durations, 90), 1),
+                    "p95": round(percentile(call_durations, 95), 1),
+                    "p99": round(percentile(call_durations, 99), 1)
+                }
+            },
+            "load_test_progress": {
+                "total_calls_completed": len(calls),
+                "target_calls": config.load_test.initial_concurrent_calls,
+                "progress_percentage": min(100, (len(calls) / config.load_test.initial_concurrent_calls) * 100)
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting load test analytics: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get load test analytics")
+
+@app.get("/", response_class=HTMLResponse)
+async def enhanced_dashboard():
+    """Enhanced load testing dashboard"""
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Enhanced LiveKit Load Testing Dashboard</title>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+            * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+            
+            body {{ 
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                min-height: 100vh;
+                color: #333;
+            }}
+            
+            .container {{ 
+                max-width: 1600px; 
+                margin: 0 auto; 
+                padding: 20px;
+            }}
+            
+            .header {{ 
+                background: rgba(255, 255, 255, 0.95);
+                backdrop-filter: blur(10px);
+                color: #333;
+                padding: 25px; 
+                border-radius: 15px; 
+                margin-bottom: 25px;
+                box-shadow: 0 8px 32px rgba(31, 38, 135, 0.37);
+                border: 1px solid rgba(255, 255, 255, 0.18);
+            }}
+            
+            .card {{ 
+                background: rgba(255, 255, 255, 0.95);
+                backdrop-filter: blur(10px);
+                padding: 25px; 
+                margin: 20px 0; 
+                border-radius: 15px; 
+                box-shadow: 0 8px 32px rgba(31, 38, 135, 0.37);
+                border: 1px solid rgba(255, 255, 255, 0.18);
+                transition: transform 0.3s ease, box-shadow 0.3s ease;
+            }}
+            
+            .card:hover {{
+                transform: translateY(-5px);
+                box-shadow: 0 12px 40px rgba(31, 38, 135, 0.5);
+            }}
+            
+            .grid {{ 
+                display: grid; 
+                grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); 
+                gap: 25px; 
+            }}
+            
+            .grid-3 {{ 
+                display: grid; 
+                grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); 
+                gap: 20px; 
+            }}
+            
+            .metric {{ 
+                display: flex; 
+                justify-content: space-between; 
+                align-items: center;
+                padding: 12px 0; 
+                border-bottom: 1px solid rgba(0,0,0,0.1); 
+            }}
+            
+            .metric:last-child {{ border-bottom: none; }}
+            
+            .metric-label {{ font-weight: 600; color: #555; }}
+            .metric-value {{ font-weight: bold; font-size: 1.1em; }}
+            
+            .status-excellent {{ color: #10b981; }}
+            .status-good {{ color: #3b82f6; }}
+            .status-warning {{ color: #f59e0b; }}
+            .status-critical {{ color: #ef4444; }}
+            
+            .btn {{ 
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white; 
+                border: none; 
+                padding: 12px 24px; 
+                border-radius: 25px; 
+                cursor: pointer; 
+                margin: 8px; 
+                font-weight: 600;
+                transition: all 0.3s ease;
+                text-decoration: none;
+                display: inline-block;
+            }}
+            
+            .btn:hover {{ 
+                transform: translateY(-2px);
+                box-shadow: 0 6px 20px rgba(0,0,0,0.15);
+            }}
+            
+            .call-item {{ 
+                padding: 15px; 
+                margin: 10px 0; 
+                background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+                border-radius: 10px; 
+                border-left: 4px solid;
+                transition: all 0.3s ease;
+            }}
+            
+            .call-item:hover {{
+                transform: translateX(5px);
+                box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            }}
+            
+            .call-item.healthy {{ border-left-color: #10b981; }}
+            .call-item.warning {{ border-left-color: #f59e0b; }}
+            .call-item.critical {{ border-left-color: #ef4444; }}
+            
+            .progress-bar {{
+                width: 100%;
+                height: 20px;
+                background: #e5e7eb;
+                border-radius: 10px;
+                overflow: hidden;
+                margin: 10px 0;
+            }}
+            
+            .progress-fill {{
+                height: 100%;
+                background: linear-gradient(90deg, #10b981, #3b82f6);
+                transition: width 0.5s ease;
+                border-radius: 10px;
+            }}
+            
+            h1, h2 {{ color: #333; margin-bottom: 15px; }}
+            h1 {{ font-size: 2.5em; font-weight: 700; }}
+            h2 {{ font-size: 1.8em; font-weight: 600; }}
+            
+            .stats-grid {{
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                gap: 15px;
+                margin: 20px 0;
+            }}
+            
+            .stat-card {{
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                padding: 20px;
+                border-radius: 10px;
+                text-align: center;
+                transition: transform 0.3s ease;
+            }}
+            
+            .stat-card:hover {{
+                transform: scale(1.05);
+            }}
+            
+            .stat-number {{
+                font-size: 2.5em;
+                font-weight: bold;
+                display: block;
+            }}
+            
+            .stat-label {{
+                font-size: 0.9em;
+                opacity: 0.9;
+                margin-top: 5px;
+            }}
+            
+            .loading {{
+                text-align: center;
+                padding: 40px;
+                color: #666;
+                font-style: italic;
+            }}
+            
+            @keyframes pulse {{
+                0% {{ opacity: 1; }}
+                50% {{ opacity: 0.5; }}
+                100% {{ opacity: 1; }}
+            }}
+            
+            .loading {{ animation: pulse 2s infinite; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>🚀 Enhanced LiveKit Load Testing Dashboard</h1>
+                <p>Client: {config.client_name} | Agent: {config.agent_name} | Redis: {config.redis_host}:{config.redis_port}/db{config.redis_db}</p>
+                <div style="margin-top: 15px;">
+                    <button class="btn" onclick="refreshData()">🔄 Refresh</button>
+                    <a class="btn" href="/docs" target="_blank">📋 API Docs</a>
+                    <button class="btn" onclick="toggleAutoRefresh()">⚡ Auto-Refresh: <span id="auto-status">ON</span></button>
+                </div>
+            </div>
+            
+            <!-- Key Metrics Overview -->
+            <div class="card">
+                <h2>📊 Load Test Overview</h2>
+                <div class="stats-grid" id="overview-stats">
+                    <div class="loading">Loading overview...</div>
+                </div>
+            </div>
+            
+            <div class="grid">
+                <!-- Real-time Performance -->
+                <div class="card">
+                    <h2>⚡ Real-time Performance</h2>
+                    <div id="performance-metrics">
+                        <div class="loading">Loading performance data...</div>
+                    </div>
+                </div>
+                
+                <!-- System Health -->
+                <div class="card">
+                    <h2>🏥 System Health</h2>
+                    <div id="system-health">
+                        <div class="loading">Loading system health...</div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Load Test Progress -->
+            <div class="card">
+                <h2>📈 Load Test Progress</h2>
+                <div id="load-progress">
+                    <div class="loading">Loading progress...</div>
+                </div>
+            </div>
+            
+            <!-- Active Calls -->
+            <div class="card">
+                <h2>📞 Active Calls (Real-time)</h2>
+                <div id="active-calls">
+                    <div class="loading">Loading active calls...</div>
+                </div>
+            </div>
+            
+            <!-- Performance Analytics -->
+            <div class="card">
+                <h2>📊 Performance Analytics</h2>
+                <div id="analytics">
+                    <div class="loading">Loading analytics...</div>
+                </div>
+            </div>
+        </div>
+
+        <script>
+            let autoRefresh = true;
+            let refreshInterval;
+
+            async function fetchData(endpoint) {{
+                try {{
+                    const response = await fetch('/api' + endpoint);
+                    if (!response.ok) throw new Error(`HTTP ${{response.status}}`);
+                    return await response.json();
+                }} catch (error) {{
+                    console.error('Fetch error:', error);
+                    return null;
+                }}
+            }}
+
+            async function updateOverviewStats() {{
+                const data = await fetchData('/enhanced-status');
+                if (!data) return;
+
+                const stats = [
+                    {{ label: 'Active Calls', value: data.load_test_status.active_calls, class: 'status-good' }},
+                    {{ label: 'Utilization', value: data.load_test_status.utilization_percent + '%', class: getUtilizationClass(data.load_test_status.utilization_percent) }},
+                    {{ label: 'Success Rate', value: data.performance_summary.success_rate + '%', class: getSuccessClass(data.performance_summary.success_rate) }},
+                    {{ label: 'Avg TTFT', value: data.performance_summary.avg_ttft_seconds + 's', class: getTTFTClass(data.performance_summary.avg_ttft_seconds) }}
+                ];
+
+                document.getElementById('overview-stats').innerHTML = stats.map(stat => 
+                    `<div class="stat-card">
+                        <span class="stat-number ${{stat.class}}">${{stat.value}}</span>
+                        <div class="stat-label">${{stat.label}}</div>
+                    </div>`
+                ).join('');
+            }}
+
+            async function updatePerformanceMetrics() {{
+                const data = await fetchData('/enhanced-status');
+                if (!data) return;
+
+                const perf = data.performance_summary;
+                const ttftClass = getTTFTClass(perf.avg_ttft_seconds);
+                const latencyClass = getLatencyClass(perf.avg_user_latency_seconds);
+
+                document.getElementById('performance-metrics').innerHTML = 
+                    '<div class="metric"><span class="metric-label">Average TTFT:</span><span class="metric-value ' + ttftClass + '">' + perf.avg_ttft_seconds + 's</span></div>' +
+                    '<div class="metric"><span class="metric-label">Average User Latency:</span><span class="metric-value ' + latencyClass + '">' + perf.avg_user_latency_seconds + 's</span></div>' +
+                    '<div class="metric"><span class="metric-label">Average Call Duration:</span><span class="metric-value">' + perf.avg_call_duration + 's</span></div>' +
+                    '<div class="metric"><span class="metric-label">Total Interactions:</span><span class="metric-value">' + perf.total_interactions + '</span></div>';
+            }}
+
+            async function updateSystemHealth() {{
+                const data = await fetchData('/enhanced-status');
+                if (!data) return;
+
+                const health = data.system_health;
+                const loadTest = data.load_test_status;
+
+                document.getElementById('system-health').innerHTML = 
+                    '<div class="metric"><span class="metric-label">Redis Connection:</span><span class="metric-value status-excellent">✅ Connected</span></div>' +
+                    '<div class="metric"><span class="metric-label">Enhanced Metrics:</span><span class="metric-value status-excellent">✅ Enabled</span></div>' +
+                    '<div class="metric"><span class="metric-label">Client:</span><span class="metric-value">' + health.client_name + '</span></div>' +
+                    '<div class="metric"><span class="metric-label">Agent:</span><span class="metric-value">' + health.agent_name + '</span></div>' +
+                    '<div class="metric"><span class="metric-label">Capacity:</span><span class="metric-value">' + loadTest.active_calls + '/' + loadTest.max_concurrent + '</span></div>';
+            }}
+
+            async function updateLoadProgress() {{
+                const analyticsData = await fetchData('/load-test-analytics');
+                if (!analyticsData) return;
+
+                const progress = analyticsData.load_test_progress;
+                const progressPercent = Math.min(100, progress.progress_percentage);
+
+                document.getElementById('load-progress').innerHTML = 
+                    '<div class="metric"><span class="metric-label">Progress:</span><span class="metric-value">' + progress.total_calls_completed + '/' + progress.target_calls + ' calls</span></div>' +
+                    '<div class="progress-bar"><div class="progress-fill" style="width: ' + progressPercent + '%"></div></div>' +
+                    '<div class="metric"><span class="metric-label">Completion:</span><span class="metric-value">' + progressPercent.toFixed(1) + '%</span></div>';
+            }}
+
+            async function updateActiveCalls() {{
+                const data = await fetchData('/enhanced-status');
+                if (!data) return;
+
+                const activeCalls = data.active_calls;
+
+                if (activeCalls.length === 0) {{
+                    document.getElementById('active-calls').innerHTML = '<div class="call-item healthy">🟢 No active calls - System ready for load testing</div>';
+                    return;
+                }}
+
+                let html = '<div><strong>Total Active: ' + activeCalls.length + '</strong></div>';
+                
+                activeCalls.forEach(call => {{
+                    const healthClass = call.status_health === 'healthy' ? 'healthy' : 'warning';
+                    html += '<div class="call-item ' + healthClass + '">' +
+                            '<div><strong>' + call.call_id + '</strong> (' + call.client_name + ')</div>' +
+                            '<div>📞 ' + call.phone_number + ' | ⏱️ ' + call.duration_minutes + ' min</div>' +
+                            '<div>🧠 LLM: ' + call.llm_calls + ' | 🗣️ TTS: ' + call.tts_calls + ' | 🎤 ASR: ' + call.asr_calls + '</div>' +
+                            '<div>⚡ TTFT: ' + call.avg_ttft + 's | 👤 User Latency: ' + call.avg_user_latency + 's</div>' +
+                            '<div>📊 Rate: ' + call.interactions_per_minute + ' interactions/min</div>' +
+                            '</div>';
+                }});
+                
+                document.getElementById('active-calls').innerHTML = html;
+            }}
+
+            async function updateAnalytics() {{
+                const data = await fetchData('/load-test-analytics');
+                if (!data) return;
+
+                const trends = data.performance_trends;
+                const distribution = data.performance_distribution;
+
+                let html = '<div class="grid-3">';
+                
+                // Hourly trends
+                html += '<div><h3>📈 Last Hour</h3>' +
+                        '<div class="metric"><span>Calls:</span><span>' + trends.hourly.total_calls + '</span></div>' +
+                        '<div class="metric"><span>Success Rate:</span><span>' + trends.hourly.success_rate.toFixed(1) + '%</span></div>' +
+                        '<div class="metric"><span>Avg TTFT:</span><span>' + trends.hourly.avg_ttft + 's</span></div></div>';
+                
+                // Daily trends
+                html += '<div><h3>📊 Last 24 Hours</h3>' +
+                        '<div class="metric"><span>Calls:</span><span>' + trends.daily.total_calls + '</span></div>' +
+                        '<div class="metric"><span>Success Rate:</span><span>' + trends.daily.success_rate.toFixed(1) + '%</span></div>' +
+                        '<div class="metric"><span>Avg TTFT:</span><span>' + trends.daily.avg_ttft + 's</span></div></div>';
+                
+                // Performance percentiles
+                html += '<div><h3>⚡ Performance Distribution</h3>' +
+                        '<div class="metric"><span>TTFT P95:</span><span>' + distribution.ttft_percentiles.p95 + 's</span></div>' +
+                        '<div class="metric"><span>User Latency P95:</span><span>' + distribution.user_latency_percentiles.p95 + 's</span></div>' +
+                        '<div class="metric"><span>Duration P95:</span><span>' + distribution.call_duration_percentiles.p95 + 's</span></div></div>';
+                
+                html += '</div>';
+                
+                document.getElementById('analytics').innerHTML = html;
+            }}
+
+            // Helper functions for status classes
+            function getUtilizationClass(percent) {{
+                if (percent < 50) return 'status-good';
+                if (percent < 80) return 'status-warning';
+                return 'status-critical';
+            }}
+
+            function getSuccessClass(percent) {{
+                if (percent >= 95) return 'status-excellent';
+                if (percent >= 85) return 'status-good';
+                if (percent >= 70) return 'status-warning';
+                return 'status-critical';
+            }}
+
+            function getTTFTClass(seconds) {{
+                if (seconds < 1.0) return 'status-excellent';
+                if (seconds < 2.0) return 'status-good';
+                if (seconds < 3.0) return 'status-warning';
+                return 'status-critical';
+            }}
+
+            function getLatencyClass(seconds) {{
+                if (seconds < 2.0) return 'status-excellent';
+                if (seconds < 3.0) return 'status-good';
+                if (seconds < 5.0) return 'status-warning';
+                return 'status-critical';
+            }}
+
+            async function refreshData() {{
+                await Promise.all([
+                    updateOverviewStats(),
+                    updatePerformanceMetrics(),
+                    updateSystemHealth(),
+                    updateLoadProgress(),
+                    updateActiveCalls(),
+                    updateAnalytics()
+                ]);
+            }}
+
+            function toggleAutoRefresh() {{
+                autoRefresh = !autoRefresh;
+                document.getElementById('auto-status').textContent = autoRefresh ? 'ON' : 'OFF';
+                
+                if (autoRefresh) {{
+                    refreshInterval = setInterval(refreshData, 5000);
+                }} else {{
+                    clearInterval(refreshInterval);
+                }}
+            }}
+
+            // Initialize
+            refreshData();
+            refreshInterval = setInterval(refreshData, 5000);
+        </script>
+    </body>
+    </html>
+    """
+
+if __name__ == "__main__":
+    import uvicorn
+    
+    port = config.monitoring_port
+    
+    print(f"🚀 Starting Enhanced Dashboard on port {port}")
+    print(f"📊 Dashboard: http://localhost:{port}")
+    print(f"🔧 Redis: {config.redis_host}:{config.redis_port}/db{config.redis_db}")
+    
+    uvicorn.run(app, host="0.0.0.0", port=port)
