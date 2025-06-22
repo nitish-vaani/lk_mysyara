@@ -146,6 +146,8 @@
 # agents/agent.py - YOUR COMPLETE FINAL VERSION WITH METRICS
 # agents/agent_enhanced.py - Enhanced agent with full metrics integration
 
+# agents/agent_enhanced_metrics.py - Better metrics integration
+
 import asyncio
 import logging
 import os
@@ -191,10 +193,16 @@ load_dotenv(dotenv_path=".env.local")
 outbound_trunk_id = os.getenv("SIP_OUTBOUND_TRUNK_ID")
 client_name = os.getenv("CLIENT_NAME", "default_client")
 
-logger = logging.getLogger("enhanced-agent")
+logger = logging.getLogger("enhanced-agent-metrics")
 logger.setLevel(logging.INFO)
 
+# Global variables for metrics
+enhanced_recorder = None
+current_call_id = None
+
 async def entrypoint(ctx: JobContext):
+    global enhanced_recorder, current_call_id
+    
     if not outbound_trunk_id or not outbound_trunk_id.startswith("ST_"):
         raise ValueError("SIP_OUTBOUND_TRUNK_ID is not set properly")
 
@@ -202,9 +210,6 @@ async def entrypoint(ctx: JobContext):
     logger.info(f"🚀 Enhanced agent connecting to room {ctx.room.name} to dial {phone_number}")
 
     # 🆕 ENHANCED METRICS SETUP
-    enhanced_recorder = None
-    call_id = None
-    
     if ENHANCED_METRICS_AVAILABLE:
         try:
             config = EnhancedMetricsConfig.from_yaml()
@@ -212,19 +217,20 @@ async def entrypoint(ctx: JobContext):
                 enhanced_recorder = EnhancedMetricsRecorder(config)
                 await enhanced_recorder.initialize()
                 
-                call_id = await enhanced_recorder.start_call(
+                current_call_id = await enhanced_recorder.start_call(
                     room_name=ctx.room.name,
                     phone_number=phone_number or "",
                     caller_name="Load Test User",
                     client_name=client_name
                 )
-                logger.info(f"📊 Enhanced metrics tracking started: {call_id}")
+                logger.info(f"📊 Enhanced metrics tracking started: {current_call_id}")
                 logger.info(f"📈 Dashboard: http://localhost:{config.monitoring_port}")
         except Exception as e:
             logger.warning(f"⚠️ Enhanced metrics setup failed: {e}")
 
     await ctx.connect()
 
+    # SIP participant setup (existing code)
     if phone_number is not None:
         participant_name = f"phone_user-{phone_number}"
         await ctx.api.sip.create_sip_participant(
@@ -246,14 +252,14 @@ async def entrypoint(ctx: JobContext):
                 break
             elif participant.disconnect_reason == rtc.DisconnectReason.USER_REJECTED:
                 logger.info("❌ User rejected the call")
-                if enhanced_recorder and call_id:
-                    await enhanced_recorder.end_call(call_id, "rejected")
+                if enhanced_recorder and current_call_id:
+                    await enhanced_recorder.end_call(current_call_id, "rejected")
                 await ctx.shutdown()
                 return
             elif participant.disconnect_reason == rtc.DisconnectReason.USER_UNAVAILABLE:
                 logger.info("❌ User unavailable")
-                if enhanced_recorder and call_id:
-                    await enhanced_recorder.end_call(call_id, "unavailable")
+                if enhanced_recorder and current_call_id:
+                    await enhanced_recorder.end_call(current_call_id, "unavailable")
                 await ctx.shutdown()
                 return
             await asyncio.sleep(0.1)
@@ -281,80 +287,36 @@ async def entrypoint(ctx: JobContext):
             if item.role == "user":
                 logger.info(f"[ASR] User: {item.text_content}")
                 await publish_transcript(ctx.room.name, "user", item.text_content)
-                
-                # Enhanced ASR metric
-                if enhanced_recorder and call_id:
-                    await enhanced_recorder.record_detailed_asr_metric(
-                        call_id, 
-                        duration=len(item.text_content) * 0.1,  # Rough estimate
-                        words=len(item.text_content.split())
-                    )
                         
             elif item.role == "assistant":
                 logger.info(f"[LLM] Agent: {item.text_content}")
                 await publish_transcript(ctx.room.name, "agent", item.text_content)
-                
-                # Enhanced TTS metric
-                if enhanced_recorder and call_id:
-                    await enhanced_recorder.record_detailed_tts_metric(
-                        call_id,
-                        ttfb=0.3,  # You can measure actual TTFB
-                        duration=len(item.text_content) * 0.05,  # Rough estimate
-                        characters=len(item.text_content)
-                    )
         
         asyncio.create_task(handle_conversation_item())
     
     session.on("conversation_item_added")(on_conversation_item_added)
     
-    # 🆕 ENHANCED METRICS HANDLER with detailed LLM tracking
+    # 🆕 ENHANCED METRICS HANDLER - This captures the logged metrics
     def on_metrics_collected(event: MetricsCollectedEvent):
         from livekit.agents.metrics import log_metrics
         log_metrics(event.metrics)
         
-        # Enhanced LLM TTFT tracking
-        if enhanced_recorder and call_id and hasattr(event.metrics, 'ttft'):
-            ttft = getattr(event.metrics, 'ttft', 0)
-            tokens_in = getattr(event.metrics, 'prompt_tokens', 0)
-            tokens_out = getattr(event.metrics, 'completion_tokens', 0)
-            
-            if ttft > 0:
-                asyncio.create_task(
-                    enhanced_recorder.record_detailed_llm_metric(
-                        call_id, ttft, tokens_in, tokens_out
-                    )
-                )
-        
-        # Enhanced EOU tracking
-        if enhanced_recorder and call_id and hasattr(event.metrics, 'end_of_utterance_delay'):
-            eou_delay = getattr(event.metrics, 'end_of_utterance_delay', 0)
-            if 0 < eou_delay < 30:  # Reasonable range
-                asyncio.create_task(
-                    enhanced_recorder.record_detailed_eou_metric(call_id, eou_delay)
-                )
-    
-    session.on("metrics_collected")(on_metrics_collected)
-    
-    # 🆕 ENHANCED SPEECH HANDLER with user latency tracking
-    def on_agent_speech_committed(event):
-        # Calculate user-experienced latency (simplified)
-        estimated_user_latency = 1.5  # You can implement actual calculation
-        
-        if enhanced_recorder and call_id:
+        # Store enhanced metrics
+        if enhanced_recorder and current_call_id:
             asyncio.create_task(
-                enhanced_recorder.record_detailed_user_latency(call_id, estimated_user_latency)
+                store_metrics_from_event(event.metrics, current_call_id)
             )
     
-    session.on("agent_speech_committed")(on_agent_speech_committed)
+    session.on("metrics_collected")(on_metrics_collected)
 
     # 🆕 ENHANCED SHUTDOWN CALLBACK
     async def enhanced_shutdown():
         try:
             logger.info("🏁 Enhanced agent shutdown initiated")
             
-            if enhanced_recorder and call_id:
-                await enhanced_recorder.end_call(call_id, "completed")
-                logger.info(f"📊 Enhanced metrics tracking ended: {call_id}")
+            if enhanced_recorder and current_call_id:
+                await enhanced_recorder.end_call(current_call_id, "completed")
+                logger.info(f"📊 Enhanced metrics tracking ended: {current_call_id}")
                 await enhanced_recorder.cleanup()
         
         except Exception as e:
@@ -362,57 +324,75 @@ async def entrypoint(ctx: JobContext):
     
     ctx.add_shutdown_callback(enhanced_shutdown)
 
-    # 🆕 PERIODIC PERFORMANCE LOGGING for load testing
-    async def log_enhanced_performance():
-        """Log enhanced performance metrics every 2 minutes"""
-        while True:
-            try:
-                await asyncio.sleep(120)
-                
-                if enhanced_recorder:
-                    active_calls = await enhanced_recorder.get_active_calls()
-                    
-                    logger.info("📊 ENHANCED LOAD TEST STATUS:")
-                    logger.info(f"  📞 Active calls: {active_calls.get('total_active', 0)}")
-                    logger.info(f"  📋 Call details: {len(active_calls.get('calls', []))}")
-                    
-                    for call in active_calls.get('calls', [])[:3]:  # Show first 3
-                        logger.info(f"    🔹 {call['call_id']}: {call['duration']:.1f}s, "
-                                   f"LLM:{call['llm_calls']}, TTS:{call['tts_calls']}, ASR:{call['asr_calls']}")
-                    
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.warning(f"⚠️ Enhanced performance logging error: {e}")
-
-    # Start enhanced monitoring
-    if enhanced_recorder:
-        monitoring_task = asyncio.create_task(log_enhanced_performance())
-        
-        async def cleanup_enhanced_monitoring():
-            monitoring_task.cancel()
-            try:
-                await monitoring_task
-            except asyncio.CancelledError:
-                pass
-
-        ctx.add_shutdown_callback(cleanup_enhanced_monitoring)
-
     await session.start(
         agent=agent,
         room=ctx.room,
     )
 
+async def store_metrics_from_event(metrics, call_id):
+    """Store metrics from MetricsCollectedEvent into enhanced recorder"""
+    if not enhanced_recorder or not call_id:
+        return
+    
+    try:
+        # Extract different types of metrics
+        for metric in metrics:
+            metric_type = getattr(metric, 'type', None) or type(metric).__name__
+            
+            if 'llm' in metric_type.lower() or hasattr(metric, 'ttft'):
+                # LLM metrics
+                ttft = getattr(metric, 'ttft', 0)
+                input_tokens = getattr(metric, 'prompt_tokens', 0) or getattr(metric, 'input_tokens', 0)
+                output_tokens = getattr(metric, 'completion_tokens', 0) or getattr(metric, 'output_tokens', 0)
+                
+                if ttft > 0:  # Valid TTFT
+                    await enhanced_recorder.record_detailed_llm_metric(
+                        call_id, ttft, input_tokens, output_tokens
+                    )
+                    logger.debug(f"📊 Stored LLM metric: TTFT={ttft:.3f}s, tokens={input_tokens}/{output_tokens}")
+            
+            elif 'tts' in metric_type.lower() or hasattr(metric, 'ttfb'):
+                # TTS metrics
+                ttfb = getattr(metric, 'ttfb', 0)
+                audio_duration = getattr(metric, 'audio_duration', 0)
+                
+                if ttfb > 0 or audio_duration > 0:
+                    await enhanced_recorder.record_detailed_tts_metric(
+                        call_id, ttfb, audio_duration, 0
+                    )
+                    logger.debug(f"📊 Stored TTS metric: TTFB={ttfb:.3f}s, duration={audio_duration:.3f}s")
+            
+            elif 'stt' in metric_type.lower() or 'asr' in metric_type.lower() or hasattr(metric, 'audio_duration'):
+                # STT/ASR metrics
+                audio_duration = getattr(metric, 'audio_duration', 0)
+                
+                if audio_duration > 0:
+                    await enhanced_recorder.record_detailed_asr_metric(
+                        call_id, audio_duration, 0
+                    )
+                    logger.debug(f"📊 Stored ASR metric: duration={audio_duration:.3f}s")
+            
+            elif 'eou' in metric_type.lower() or hasattr(metric, 'end_of_utterance_delay'):
+                # EOU metrics
+                eou_delay = getattr(metric, 'end_of_utterance_delay', 0)
+                
+                if 0 < eou_delay < 30:  # Reasonable range
+                    await enhanced_recorder.record_detailed_eou_metric(call_id, eou_delay)
+                    logger.debug(f"📊 Stored EOU metric: delay={eou_delay:.3f}s")
+            
+    except Exception as e:
+        logger.error(f"❌ Error storing metrics: {e}")
+
 def prewarm_fnc(proc: JobProcess):
     proc.userdata["vad"] = silero.VAD.load()
 
 if __name__ == "__main__":
-    agent_list = ['enhanced-agent-1', 'enhanced-agent-2', 'enhanced-agent-3']
+    agent_list = ['enhanced-agent-metrics-1', 'enhanced-agent-metrics-2', 'enhanced-agent-metrics-3']
     def get_free_agent():
         return agent_list[0]
     agent_ = get_free_agent()
     
-    logger.info("🎯 Starting Enhanced LiveKit Agent with Load Test Metrics")
+    logger.info("🎯 Starting Enhanced LiveKit Agent with Call-by-Call Metrics")
     logger.info(f"📊 Agent: {agent_}")
     
     if ENHANCED_METRICS_AVAILABLE:
@@ -421,10 +401,9 @@ if __name__ == "__main__":
             logger.info(f"✅ Enhanced metrics enabled: {config.client_name}")
             logger.info(f"🔧 Redis: {config.redis_host}:{config.redis_port}/db{config.redis_db}")
             logger.info(f"📈 Dashboard: http://localhost:{config.monitoring_port}")
-            logger.info(f"🎯 Load test target: {config.load_test.max_concurrent_calls} concurrent calls")
             logger.info("="*60)
-            logger.info("🚀 READY FOR ENHANCED LOAD TESTING!")
-            logger.info("📋 Monitor progress at dashboard")
+            logger.info("🚀 READY FOR CALL-BY-CALL METRICS TRACKING!")
+            logger.info("📋 View individual call metrics at dashboard")
             logger.info("="*60)
         except Exception as e:
             logger.warning(f"⚠️ Enhanced metrics config error: {e}")

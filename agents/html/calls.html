@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Call-by-Call Metrics Dashboard</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+        
+        .container { 
+            max-width: 1800px; 
+            margin: 0 auto; 
+            padding: 20px;
+        }
+        
+        .header { 
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            color: #333;
+            padding: 25px; 
+            border-radius: 15px; 
+            margin-bottom: 25px;
+            box-shadow: 0 8px 32px rgba(31, 38, 135, 0.37);
+            border: 1px solid rgba(255, 255, 255, 0.18);
+        }
+        
+        .card { 
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            padding: 25px; 
+            margin: 20px 0; 
+            border-radius: 15px; 
+            box-shadow: 0 8px 32px rgba(31, 38, 135, 0.37);
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+        
+        .card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 12px 40px rgba(31, 38, 135, 0.5);
+        }
+        
+        .grid { 
+            display: grid; 
+            grid-template-columns: 1fr 2fr; 
+            gap: 25px; 
+        }
+        
+        .calls-list {
+            max-height: 70vh;
+            overflow-y: auto;
+        }
+        
+        .call-item { 
+            padding: 15px; 
+            margin: 10px 0; 
+            background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+            border-radius: 10px; 
+            border-left: 4px solid;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        
+        .call-item:hover {
+            transform: translateX(5px);
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        }
+        
+        .call-item.active { border-left-color: #10b981; }
+        .call-item.completed { border-left-color: #3b82f6; }
+        .call-item.failed { border-left-color: #ef4444; }
+        .call-item.selected {
+            background: linear-gradient(135deg, #ddd6fe 0%, #c4b5fd 100%);
+            border-left-color: #8b5cf6;
+        }
+        
+        .call-header {
+            font-weight: bold;
+            color: #1f2937;
+            margin-bottom: 5px;
+        }
+        
+        .call-details {
+            font-size: 0.9em;
+            color: #6b7280;
+        }
+        
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin: 20px 0;
+        }
+        
+        .metric-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+            transition: transform 0.3s ease;
+        }
+        
+        .metric-card:hover {
+            transform: scale(1.05);
+        }
+        
+        .metric-number {
+            font-size: 2em;
+            font-weight: bold;
+            display: block;
+        }
+        
+        .metric-label {
+            font-size: 0.9em;
+            opacity: 0.9;
+            margin-top: 5px;
+        }
+        
+        .timeline {
+            max-height: 400px;
+            overflow-y: auto;
+            margin-top: 20px;
+        }
+        
+        .timeline-item {
+            display: flex;
+            align-items: center;
+            padding: 10px;
+            margin: 5px 0;
+            background: #f8fafc;
+            border-radius: 8px;
+            border-left: 3px solid;
+        }
+        
+        .timeline-item.LLM { border-left-color: #3b82f6; }
+        .timeline-item.TTS { border-left-color: #10b981; }
+        .timeline-item.ASR { border-left-color: #f59e0b; }
+        .timeline-item.EOU { border-left-color: #ef4444; }
+        .timeline-item.USER_LATENCY { border-left-color: #8b5cf6; }
+        
+        .timeline-time {
+            font-family: monospace;
+            font-weight: bold;
+            margin-right: 15px;
+            min-width: 60px;
+        }
+        
+        .timeline-type {
+            font-weight: bold;
+            margin-right: 10px;
+            min-width: 80px;
+        }
+        
+        .timeline-details {
+            font-size: 0.9em;
+            color: #6b7280;
+        }
+        
+        .btn { 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white; 
+            border: none; 
+            padding: 12px 24px; 
+            border-radius: 25px; 
+            cursor: pointer; 
+            margin: 8px; 
+            font-weight: 600;
+            transition: all 0.3s ease;
+            text-decoration: none;
+            display: inline-block;
+        }
+        
+        .btn:hover { 
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0,0,0,0.15);
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+            font-style: italic;
+        }
+        
+        .search-box {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #d1d5db;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            font-size: 1em;
+        }
+        
+        .status-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.8em;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+        
+        .status-badge.active { background: #10b981; color: white; }
+        .status-badge.completed { background: #3b82f6; color: white; }
+        .status-badge.failed { background: #ef4444; color: white; }
+        
+        h1, h2 { color: #333; margin-bottom: 15px; }
+        h1 { font-size: 2.5em; font-weight: 700; }
+        h2 { font-size: 1.8em; font-weight: 600; }
+
+        .metric { 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center;
+            padding: 8px 0; 
+            border-bottom: 1px solid rgba(0,0,0,0.1); 
+        }
+        
+        .metric:last-child { border-bottom: none; }
+        
+        .metric-label { font-weight: 600; color: #555; }
+        .metric-value { font-weight: bold; font-size: 1em; }
+
+        .call-info {
+            background: #f8fafc;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📞 Call-by-Call Metrics Dashboard</h1>
+            <p>Detailed metrics and timeline for each individual call</p>
+            <div style="margin-top: 15px;">
+                <button class="btn" onclick="refreshCalls()">🔄 Refresh</button>
+                <button class="btn" onclick="toggleAutoRefresh()">⚡ Auto-Refresh: <span id="auto-status">ON</span></button>
+                <a class="btn" href="/">📊 Main Dashboard</a>
+                <a class="btn" href="/docs" target="_blank">📋 API Docs</a>
+            </div>
+        </div>
+        
+        <div class="grid">
+            <!-- Calls List -->
+            <div class="card">
+                <h2>📋 Calls List</h2>
+                <input type="text" id="search-box" class="search-box" placeholder="Search by call ID, phone, or name..." onkeyup="filterCalls()">
+                <div id="calls-list" class="calls-list">
+                    <div class="loading">Loading calls...</div>
+                </div>
+            </div>
+            
+            <!-- Call Details -->
+            <div class="card">
+                <h2>📊 Call Details</h2>
+                <div id="call-details">
+                    <div class="loading">Select a call to view details</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Call Timeline -->
+        <div class="card" id="timeline-card" style="display: none;">
+            <h2>⏱️ Call Timeline</h2>
+            <div id="call-timeline">
+                <div class="loading">Loading timeline...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let autoRefresh = true;
+        let refreshInterval;
+        let allCalls = { active_calls: [], completed_calls: [] };
+        let selectedCallId = null;
+
+        async function fetchData(endpoint) {
+            try {
+                const response = await fetch('/api' + endpoint);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                return await response.json();
+            } catch (error) {
+                console.error('Fetch error:', error);
+                return null;
+            }
+        }
+
+        async function refreshCalls() {
+            const data = await fetchData('/calls');
+            if (!data) return;
+
+            allCalls = data;
+            displayCalls();
+        }
+
+        function displayCalls() {
+            const callsList = document.getElementById('calls-list');
+            const searchTerm = document.getElementById('search-box').value.toLowerCase();
+            
+            let html = '';
+            
+            // Display active calls
+            if (allCalls.active_calls.length > 0) {
+                html += '<h3 style="margin: 20px 0 10px 0; color: #10b981;">🟢 Active Calls (' + allCalls.active_calls.length + ')</h3>';
+                
+                allCalls.active_calls.forEach(call => {
+                    if (matchesSearch(call, searchTerm)) {
+                        html += createCallItem(call, 'active');
+                    }
+                });
+            }
+            
+            // Display completed calls
+            if (allCalls.completed_calls.length > 0) {
+                html += '<h3 style="margin: 20px 0 10px 0; color: #3b82f6;">🔵 Completed Calls (' + allCalls.completed_calls.length + ')</h3>';
+                
+                allCalls.completed_calls.forEach(call => {
+                    if (matchesSearch(call, searchTerm)) {
+                        html += createCallItem(call, 'completed');
+                    }
+                });
+            }
+            
+            if (html === '') {
+                html = '<div class="loading">No calls found</div>';
+            }
+            
+            callsList.innerHTML = html;
+        }
+
+        function matchesSearch(call, searchTerm) {
+            if (!searchTerm) return true;
+            
+            return call.call_id.toLowerCase().includes(searchTerm) ||
+                   call.phone_number.toLowerCase().includes(searchTerm) ||
+                   call.caller_name.toLowerCase().includes(searchTerm) ||
+                   call.client_name.toLowerCase().includes(searchTerm);
+        }
+
+        function createCallItem(call, status) {
+            const duration = formatDuration(call.duration);
+            const startTime = new Date(call.start_time * 1000).toLocaleString();
+            const isSelected = call.call_id === selectedCallId ? 'selected' : '';
+            
+            return `
+                <div class="call-item ${status} ${isSelected}" onclick="selectCall('${call.call_id}')">
+                    <div class="call-header">
+                        ${call.call_id}
+                        <span class="status-badge ${status}">${status}</span>
+                    </div>
+                    <div class="call-details">
+                        📞 ${call.phone_number} | 👤 ${call.caller_name}<br>
+                        🏢 ${call.client_name} | 🏠 ${call.room_name}<br>
+                        ⏰ ${startTime} | ⏱️ ${duration}
+                    </div>
+                </div>
+            `;
+        }
+
+        function formatDuration(seconds) {
+            const minutes = Math.floor(seconds / 60);
+            const remainingSeconds = Math.floor(seconds % 60);
+            return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
+        }
+
+        async function selectCall(callId) {
+            selectedCallId = callId;
+            displayCalls(); // Refresh to show selection
+            
+            // Show loading
+            document.getElementById('call-details').innerHTML = '<div class="loading">Loading call details...</div>';
+            document.getElementById('timeline-card').style.display = 'none';
+            
+            // Fetch call details
+            const details = await fetchData(`/call/${callId}`);
+            if (!details) return;
+            
+            displayCallDetails(details);
+            
+            // Fetch and display timeline
+            const timeline = await fetchData(`/call/${callId}/timeline`);
+            if (timeline) {
+                displayCallTimeline(timeline);
+            }
+        }
+
+        function displayCallDetails(details) {
+            const info = details.call_info;
+            const summary = details.metrics_summary;
+            
+            const status = info.status;
+            const duration = formatDuration(info.duration_seconds);
+            const startTime = new Date(info.start_time * 1000).toLocaleString();
+            const endTime = info.end_time ? new Date(info.end_time * 1000).toLocaleString() : 'Ongoing';
+            
+            let html = `
+                <div class="call-info">
+                    <h3>${info.call_id}</h3>
+                    <div class="metric"><span class="metric-label">Status:</span><span class="metric-value"><span class="status-badge ${status}">${status}</span></span></div>
+                    <div class="metric"><span class="metric-label">Phone:</span><span class="metric-value">${info.phone_number}</span></div>
+                    <div class="metric"><span class="metric-label">Caller:</span><span class="metric-value">${info.caller_name}</span></div>
+                    <div class="metric"><span class="metric-label">Client:</span><span class="metric-value">${info.client_name}</span></div>
+                    <div class="metric"><span class="metric-label">Agent:</span><span class="metric-value">${info.agent_name}</span></div>
+                    <div class="metric"><span class="metric-label">Room:</span><span class="metric-value">${info.room_name}</span></div>
+                    <div class="metric"><span class="metric-label">Started:</span><span class="metric-value">${startTime}</span></div>
+                    <div class="metric"><span class="metric-label">Ended:</span><span class="metric-value">${endTime}</span></div>
+                    <div class="metric"><span class="metric-label">Duration:</span><span class="metric-value">${duration}</span></div>
+                    ${info.failure_reason ? `<div class="metric"><span class="metric-label">Failure:</span><span class="metric-value">${info.failure_reason}</span></div>` : ''}
+                </div>
+                
+                <div class="metrics-grid">
+                    <div class="metric-card">
+                        <span class="metric-number">${summary.llm_calls}</span>
+                        <div class="metric-label">LLM Calls</div>
+                    </div>
+                    <div class="metric-card">
+                        <span class="metric-number">${summary.tts_calls}</span>
+                        <div class="metric-label">TTS Calls</div>
+                    </div>
+                    <div class="metric-card">
+                        <span class="metric-number">${summary.asr_calls}</span>
+                        <div class="metric-label">ASR Calls</div>
+                    </div>
+                    <div class="metric-card">
+                        <span class="metric-number">${summary.total_interactions}</span>
+                        <div class="metric-label">Total Interactions</div>
+                    </div>
+                    <div class="metric-card">
+                        <span class="metric-number">${summary.avg_ttft_seconds}s</span>
+                        <div class="metric-label">Avg TTFT</div>
+                    </div>
+                    <div class="metric-card">
+                        <span class="metric-number">${summary.avg_tts_ttfb_seconds}s</span>
+                        <div class="metric-label">Avg TTS TTFB</div>
+                    </div>
+                    <div class="metric-card">
+                        <span class="metric-number">${summary.avg_user_latency_seconds}s</span>
+                        <div class="metric-label">Avg User Latency</div>
+                    </div>
+                    <div class="metric-card">
+                        <span class="metric-number">${summary.total_tokens_in + summary.total_tokens_out}</span>
+                        <div class="metric-label">Total Tokens</div>
+                    </div>
+                </div>
+            `;
+            
+            document.getElementById('call-details').innerHTML = html;
+        }
+
+        function displayCallTimeline(timeline) {
+            document.getElementById('timeline-card').style.display = 'block';
+            
+            let html = `
+                <p><strong>Total Events:</strong> ${timeline.total_events}</p>
+                <div class="timeline">
+            `;
+            
+            timeline.timeline.forEach(event => {
+                const details = formatEventDetails(event);
+                
+                html += `
+                    <div class="timeline-item ${event.type}">
+                        <div class="timeline-time">+${event.relative_time}s</div>
+                        <div class="timeline-type">${event.type}</div>
+                        <div style="flex: 1;">
+                            <strong>${event.event}</strong><br>
+                            <div class="timeline-details">${details}</div>
+                        </div>
+                    </div>
+                `;
+            });
+            
+            html += '</div>';
+            
+            document.getElementById('call-timeline').innerHTML = html;
+        }
+
+        function formatEventDetails(event) {
+            const details = event.details;
+            
+            switch (event.type) {
+                case 'LLM':
+                    return `TTFT: ${details.ttft}s | Tokens: ${details.tokens_in}→${details.tokens_out}`;
+                case 'TTS':
+                    return `TTFB: ${details.ttfb}s | Duration: ${details.duration}s | Chars: ${details.characters}`;
+                case 'ASR':
+                    return `Duration: ${details.duration}s | Words: ${details.words}`;
+                case 'EOU':
+                    return `Delay: ${details.delay}s`;
+                case 'USER_LATENCY':
+                    return `Latency: ${details.latency}s`;
+                default:
+                    return JSON.stringify(details);
+            }
+        }
+
+        function filterCalls() {
+            displayCalls();
+        }
+
+        function toggleAutoRefresh() {
+            autoRefresh = !autoRefresh;
+            document.getElementById('auto-status').textContent = autoRefresh ? 'ON' : 'OFF';
+            
+            if (autoRefresh) {
+                refreshInterval = setInterval(refreshCalls, 10000);
+            } else {
+                clearInterval(refreshInterval);
+            }
+        }
+
+        // Initialize
+        refreshCalls();
+        refreshInterval = setInterval(refreshCalls, 10000);
+    </script>
+</body>
+</html>
