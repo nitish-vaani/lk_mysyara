@@ -1,0 +1,91 @@
+# docker-compose.yml
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: mysyara_db
+    environment:
+      POSTGRES_DB: mysyara
+      POSTGRES_USER: mysyara_user
+      POSTGRES_PASSWORD: mysyara_password
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-scripts:/docker-entrypoint-initdb.d/
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mysyara_user -d mysyara"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - mysyara_network
+
+  backend:
+    image: python:3.11-slim
+    container_name: mysyara
+    working_dir: /app
+    environment:
+      DATABASE_URL: postgresql://mysyara_user:mysyara_password@postgres:5432/mysyara
+      REDIS_HOST: sbi.vaaniresearch.com
+      REDIS_PORT: 6379
+      REDIS_DB: 15
+      SECRET_KEY: your-super-secret-key-for-production
+      ENVIRONMENT: development
+      PYTHONPATH: /app
+    ports:
+      - "8008:8000"
+    volumes:
+      - ./backend:/app
+      - backend_logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >
+      bash -c "
+        pip install --no-cache-dir -r requirements.txt &&
+        tail -f /dev/null &&
+        python -c 'from models import create_database, init_default_data; create_database(); init_default_data()' &&
+        uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+      "
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - mysyara_network
+
+  # Optional: Redis service if you want to run Redis locally instead of using external
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: mysyara_redis
+  #   ports:
+  #     - "6379:6379"
+  #   volumes:
+  #     - redis_data:/data
+  #   command: redis-server --appendonly yes
+  #   healthcheck:
+  #     test: ["CMD", "redis-cli", "ping"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 3
+  #   restart: unless-stopped
+  #   networks:
+  #     - mysyara_network
+
+volumes:
+  postgres_data:
+    driver: local
+  backend_logs:
+    driver: local
+  # redis_data:
+  #   driver: local
+
+networks:
+  mysyara_network:
+    driver: bridge
