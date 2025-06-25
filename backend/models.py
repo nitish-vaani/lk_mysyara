@@ -4,6 +4,7 @@ from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, F
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import Index, UniqueConstraint
 import uuid
 
 # Database configuration - supports both PostgreSQL and SQLite
@@ -94,12 +95,61 @@ class Call(Base):
     # Performance metrics
     response_time = Column(Float)
     quality_score = Column(Float)
+
+    # Enhanced sync tracking fields (ADD these)
+    synced_from_redis = Column(Boolean, default=False)
+    last_sync_time = Column(DateTime)
+    sync_source = Column(String(50))  # 'auto_sync', 'manual_sync', 'webhook'
+    
     
     # Relationships
     client = relationship("Client", back_populates="calls")
     agent = relationship("Agent", back_populates="calls")
     metrics = relationship("CallMetrics", back_populates="call", cascade="all, delete-orphan")
+    metrics_detail = relationship("CallMetricsDetail", back_populates="call", cascade="all, delete-orphan")
     transcripts = relationship("TranscriptSegment", back_populates="call", cascade="all, delete-orphan")
+    call = relationship("Call", back_populates="metrics_detail")
+
+class SyncStatus(Base):
+    """Track sync operations between Redis and PostgreSQL - ADD THIS TABLE"""
+    __tablename__ = "sync_status"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    
+    # Sync details
+    sync_type = Column(String(50), nullable=False)  # 'transcript', 'metrics', 'post_call'
+    room_id = Column(String(255), nullable=False, index=True)
+    call_id = Column(Integer, ForeignKey("calls.id"))
+    
+    # Status tracking
+    status = Column(String(50), nullable=False)  # 'pending', 'in_progress', 'completed', 'failed'
+    started_at = Column(DateTime, nullable=False)
+    completed_at = Column(DateTime)
+    
+    # Error tracking
+    error_count = Column(Integer, default=0)
+    last_error = Column(Text)
+    error_details = Column(JSON)
+    
+    # Data tracking
+    records_processed = Column(Integer, default=0)
+    processing_time_ms = Column(Integer)
+    
+    # Retry tracking
+    retry_count = Column(Integer, default=0)
+    next_retry_at = Column(DateTime)
+    max_retries = Column(Integer, default=3)
+    
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Indexes
+    __table_args__ = (
+        Index('idx_sync_type_status', 'sync_type', 'status'),
+        Index('idx_room_id_type', 'room_id', 'sync_type'),
+    )
+
 
 class CallMetrics(Base):
     """Detailed call metrics table"""
@@ -131,6 +181,40 @@ class CallMetrics(Base):
     # System metrics during call
     cpu_usage = Column(JSON)  # Store CPU usage over time
     memory_usage = Column(JSON)  # Store memory usage over time
+
+    # Enhanced LLM metrics (ADD these)
+    min_ttft = Column(Float)
+    max_ttft = Column(Float)
+    avg_tokens_per_call = Column(Float)
+    
+    # Enhanced TTS metrics (ADD these)  
+    min_tts_ttfb = Column(Float)
+    max_tts_ttfb = Column(Float)
+    total_characters_processed = Column(Integer, default=0)
+    
+    # Enhanced ASR metrics (ADD these)
+    min_asr_latency = Column(Float)
+    max_asr_latency = Column(Float)
+    avg_words_per_utterance = Column(Float)
+    
+    # EOU metrics (ADD these)
+    eou_events = Column(Integer, default=0)
+    avg_eou_delay = Column(Float)
+    min_eou_delay = Column(Float)
+    max_eou_delay = Column(Float)
+    
+    # Enhanced user experience metrics (ADD these)
+    min_user_latency = Column(Float)
+    max_user_latency = Column(Float)
+    user_wait_time = Column(Float)
+    
+    # Performance scores (ADD these)
+    efficiency_score = Column(Float)  # Overall efficiency (0-100)
+    performance_grade = Column(String(5))  # A, B, C, D, F
+    
+    # Timestamps (ADD these)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
     
     # Extensible metrics
     additional_metrics = Column(JSON)
@@ -196,6 +280,50 @@ class CallSummary(Base):
     avg_revenue_per_call = Column(Float)
     
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class CallMetricsDetail(Base):
+    """Individual metric events for detailed analysis - ADD THIS TABLE"""
+    __tablename__ = "call_metrics_detail"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    call_id = Column(Integer, ForeignKey("calls.id"), nullable=False)
+    
+    # Event details
+    metric_type = Column(String(20), nullable=False, index=True)  # 'llm', 'tts', 'asr', 'eou', 'user_latency'
+    event_timestamp = Column(DateTime, nullable=False, index=True)
+    sequence_number = Column(Integer)  # Order within the call
+    
+    # Common metrics
+    duration_ms = Column(Float)  # Duration of the event in milliseconds
+    latency_ms = Column(Float)   # Latency for the event
+    
+    # Type-specific metrics stored as JSON
+    event_details = Column(JSON)  # Raw event data
+    # Examples:
+    # LLM: {"ttft": 0.5, "tokens_in": 10, "tokens_out": 15}
+    # TTS: {"ttfb": 0.3, "duration": 2.1, "characters": 150}
+    # ASR: {"duration": 1.2, "words": 5, "confidence": 0.95}
+    
+    # Quality indicators
+    success = Column(Boolean, default=True)
+    error_code = Column(String(50))
+    error_message = Column(Text)
+    
+    # Performance indicators
+    performance_score = Column(Float)  # 0-100 score for this specific event
+    
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Indexes for efficient querying
+    __table_args__ = (
+        Index('idx_call_metric_type', 'call_id', 'metric_type'),
+        Index('idx_event_timestamp', 'event_timestamp'),
+        Index('idx_metric_type_timestamp', 'metric_type', 'event_timestamp'),
+    )
+
+
 
 # Database initialization functions
 def create_database():

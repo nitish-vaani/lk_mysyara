@@ -26,7 +26,7 @@
 # redis_port: 6379
 
 agent_name: enhanced-agent-1
-client_name: your_company_name
+client_name: mysyara
 enabled: true
 redis_host: sbi.vaaniresearch.com
 redis_port: 6379
@@ -48,7 +48,7 @@ load_test:
   memory_failure_threshold: 95.0
   call_failure_rate_threshold: 50.0
   csv_file_path: test_data/call_list.csv
-  client_name: your_company_name
+  client_name: mysyara
   test_name: enhanced_load_test
   reports_directory: reports
   generate_detailed_report: true

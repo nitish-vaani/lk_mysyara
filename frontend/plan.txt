@@ -1,0 +1,10 @@
+#Create a login page with security features.
+#After login the person reaches a dashboard page where they get the information like;
+    Total number of calls
+    Total calls picked
+    Total leads
+
+#The header will have the option to signout, call history page
+#The call history page will have the list of all calls. (I will give an example how)
+#The call history and dashboard page will both have a filter option.
+#Call history page will have the export to csv button.

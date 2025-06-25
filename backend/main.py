@@ -1,5 +1,3 @@
-# backend/main.py - Main FastAPI application with full functionality
-
 import asyncio
 import logging
 from contextlib import asynccontextmanager
@@ -9,11 +7,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import uvicorn
 
-# Import our modules
+# Import modules
 from models import create_database, init_default_data
 from routes import router as api_router
 from services import background_sync_task, RedisService, DataSyncService
 from config import settings
+from services import enhanced_background_sync_task
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -23,19 +22,68 @@ logger = logging.getLogger(__name__)
 background_task = None
 redis_service = None
 
+# @asynccontextmanager
+# async def lifespan(app: FastAPI):
+#     """Manage application lifespan"""
+    
+#     # Startup
+#     logger.info("🚀 Starting Call Center Backend API")
+    
+#     # Initialize database
+#     logger.info("📊 Initializing database...")
+#     create_database()
+#     init_default_data()
+    
+#     # Initialize Redis service
+#     global redis_service
+#     redis_service = RedisService()
+#     connected = await redis_service.connect()
+#     if connected:
+#         logger.info("✅ Redis connection established")
+#     else:
+#         logger.warning("⚠️ Redis connection failed - some features may be limited")
+    
+#     # Start background sync task
+#     global background_task
+#     background_task = asyncio.create_task(background_sync_task())
+#     logger.info("🔄 Background sync task started")
+    
+#     logger.info("✅ Application startup complete")
+#     logger.info("📋 API Documentation: http://localhost:8000/docs")
+#     logger.info("🔧 Health Check: http://localhost:8000/health")
+    
+#     yield
+    
+#     # Shutdown
+#     logger.info("🛑 Shutting down Call Center Backend API")
+    
+#     # Cancel background task
+#     if background_task:
+#         background_task.cancel()
+#         try:
+#             await background_task
+#         except asyncio.CancelledError:
+#             pass
+    
+#     # Close Redis connection
+#     if redis_service:
+#         await redis_service.close()
+    
+#     logger.info("✅ Shutdown complete")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Manage application lifespan"""
+    """Enhanced lifespan management - REPLACE your existing lifespan function"""
     
     # Startup
-    logger.info("🚀 Starting Call Center Backend API")
+    logger.info("🚀 Starting Enhanced Call Center Backend API")
     
-    # Initialize database
+    # Your existing startup code
     logger.info("📊 Initializing database...")
     create_database()
     init_default_data()
     
-    # Initialize Redis service
+    # Your existing Redis service
     global redis_service
     redis_service = RedisService()
     connected = await redis_service.connect()
@@ -44,10 +92,17 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("⚠️ Redis connection failed - some features may be limited")
     
-    # Start background sync task
+    # Your existing background task
     global background_task
     background_task = asyncio.create_task(background_sync_task())
     logger.info("🔄 Background sync task started")
+    
+    # 🆕 ADD ENHANCED SYNC SERVICE
+    from config import settings
+    if settings.SYNC_ENABLED:
+        global enhanced_background_task
+        enhanced_background_task = asyncio.create_task(enhanced_background_sync_task())
+        logger.info("🔄 Enhanced sync service started")
     
     logger.info("✅ Application startup complete")
     logger.info("📋 API Documentation: http://localhost:8000/docs")
@@ -56,9 +111,9 @@ async def lifespan(app: FastAPI):
     yield
     
     # Shutdown
-    logger.info("🛑 Shutting down Call Center Backend API")
+    logger.info("🛑 Shutting down Enhanced Call Center Backend API")
     
-    # Cancel background task
+    # Cancel your existing background task
     if background_task:
         background_task.cancel()
         try:
@@ -66,13 +121,25 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
     
-    # Close Redis connection
+    # 🆕 CANCEL ENHANCED BACKGROUND TASK
+    if 'enhanced_background_task' in globals() and enhanced_background_task:
+        enhanced_background_task.cancel()
+        try:
+            await enhanced_background_task
+        except asyncio.CancelledError:
+            pass
+    
+    # Your existing Redis cleanup
     if redis_service:
         await redis_service.close()
     
+    # 🆕 CLEANUP ENHANCED SERVICES
+    from services import enhanced_redis_service
+    if enhanced_redis_service:
+        await enhanced_redis_service.cleanup()
+    
     logger.info("✅ Shutdown complete")
 
-# Create FastAPI app with lifespan management
 app = FastAPI(
     title="Call Center Management API",
     description="""

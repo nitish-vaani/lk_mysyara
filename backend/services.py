@@ -6,6 +6,8 @@ import asyncio
 import aioredis
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
+from dataclasses import dataclass
+from models import CallMetricsDetail, SyncStatus
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
@@ -410,6 +412,346 @@ class DataSyncService:
         finally:
             await self.redis_service.close()
 
+class EnhancedRedisService:
+    """Enhanced Redis service for multi-DB operations - ADD THIS CLASS"""
+    
+    def __init__(self):
+        self.transcript_redis = None
+        self.metrics_redis = None
+        self._connected = False
+        
+    async def initialize(self) -> bool:
+        """Initialize Redis connections"""
+        try:
+            from config import settings  # Use your existing settings
+            
+            # Connect to transcript database (DB 0)
+            self.transcript_redis = aioredis.Redis(
+                host=settings.REDIS_HOST,
+                port=settings.REDIS_PORT,
+                db=settings.REDIS_DB_TRANSCRIPTS,
+                password=getattr(settings, 'REDIS_PASSWORD', None),
+                decode_responses=True,
+                socket_connect_timeout=5
+            )
+            
+            # Connect to metrics database (DB 15)
+            self.metrics_redis = aioredis.Redis(
+                host=settings.REDIS_HOST,
+                port=settings.REDIS_PORT,
+                db=settings.REDIS_DB_METRICS,
+                password=getattr(settings, 'REDIS_PASSWORD', None),
+                decode_responses=True,
+                socket_connect_timeout=5
+            )
+            
+            # Test connections
+            await self.transcript_redis.ping()
+            await self.metrics_redis.ping()
+            
+            self._connected = True
+            logger.info(f"✅ Enhanced Redis connected: {settings.REDIS_HOST}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Enhanced Redis connection failed: {e}")
+            return False
+    
+    @property
+    def is_connected(self) -> bool:
+        return self._connected
+    
+    async def get_room_history(self, room_id: str) -> List[Dict[str, Any]]:
+        """Get transcript history for a room"""
+        try:
+            history_key = f"room_history:{room_id}"
+            messages = await self.transcript_redis.lrange(history_key, 0, -1)
+            
+            parsed_messages = []
+            for msg in messages:
+                try:
+                    parsed = json.loads(msg)
+                    parsed_messages.append(parsed)
+                except json.JSONDecodeError:
+                    continue
+            
+            parsed_messages.sort(key=lambda x: x.get('timestamp', 0))
+            return parsed_messages
+            
+        except Exception as e:
+            logger.error(f"❌ Error getting room history: {e}")
+            return []
+    
+    async def get_enhanced_metrics(self, call_id: str) -> Dict[str, Any]:
+        """Get enhanced metrics for a call"""
+        try:
+            metrics_key = f"enhanced_metrics:call:{call_id}"
+            metrics_data = await self.metrics_redis.get(metrics_key)
+            
+            if metrics_data:
+                return json.loads(metrics_data)
+            return {}
+                
+        except Exception as e:
+            logger.error(f"❌ Error getting metrics: {e}")
+            return {}
+    
+    async def get_sync_candidates(self) -> List[str]:
+        """Get all room IDs that need syncing"""
+        try:
+            # Get transcript room IDs
+            transcript_keys = await self.transcript_redis.keys("room_history:*")
+            transcript_rooms = {key.replace("room_history:", "") for key in transcript_keys}
+            
+            # Get metrics call IDs
+            metrics_keys = await self.metrics_redis.keys("enhanced_metrics:call:*")
+            metrics_calls = {key.replace("enhanced_metrics:call:", "") for key in metrics_keys}
+            
+            # Return union of both
+            return list(transcript_rooms.union(metrics_calls))
+            
+        except Exception as e:
+            logger.error(f"❌ Error getting sync candidates: {e}")
+            return []
+    
+    async def publish_post_call_event(self, room_id: str, status: str, metadata: Dict = None) -> bool:
+        """Publish post-call event"""
+        try:
+            from config import settings
+            event_data = {
+                "room_id": room_id,
+                "action": "call_ended",
+                "status": status,
+                "timestamp": datetime.now().isoformat(),
+                "metadata": metadata or {}
+            }
+            
+            await self.transcript_redis.publish(settings.POST_CALL_QUEUE_NAME, json.dumps(event_data))
+            logger.info(f"📤 Published post-call event for {room_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Error publishing post-call event: {e}")
+            return False
+    
+    async def cleanup(self):
+        """Cleanup connections"""
+        try:
+            if self.transcript_redis:
+                await self.transcript_redis.close()
+            if self.metrics_redis:
+                await self.metrics_redis.close()
+            self._connected = False
+        except Exception as e:
+            logger.error(f"❌ Redis cleanup error: {e}")
+
+@dataclass
+class SyncResult:
+    """Result of a sync operation - ADD THIS CLASS"""
+    success: bool
+    room_id: str
+    records_created: int = 0
+    errors: List[str] = None
+    
+    def __post_init__(self):
+        if self.errors is None:
+            self.errors = []
+
+class EnhancedSyncService:
+    """Enhanced sync service for Redis to PostgreSQL - ADD THIS CLASS"""
+    
+    def __init__(self, enhanced_redis: EnhancedRedisService):
+        self.enhanced_redis = enhanced_redis
+        self.default_client_id = None
+        
+    async def initialize(self) -> bool:
+        """Initialize sync service"""
+        try:
+            from config import settings
+            
+            # Get default client ID
+            db = SessionLocal()
+            try:
+                from models import Client  # Use your existing Client model
+                client = db.query(Client).filter(Client.name.like(f"%{settings.CLIENT_ID}%")).first()
+                if client:
+                    self.default_client_id = client.id
+                else:
+                    # Create default client if not exists
+                    client = Client(name=settings.CLIENT_NAME)
+                    db.add(client)
+                    db.commit()
+                    self.default_client_id = client.id
+            finally:
+                db.close()
+            
+            logger.info("✅ Enhanced sync service initialized")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Sync service initialization failed: {e}")
+            return False
+    
+    async def sync_all_data(self) -> Dict[str, Any]:
+        """Sync all pending data from Redis to PostgreSQL"""
+        try:
+            candidates = await self.enhanced_redis.get_sync_candidates()
+            
+            if not candidates:
+                return {"status": "success", "message": "No data to sync", "total": 0}
+            
+            logger.info(f"🔄 Syncing {len(candidates)} calls...")
+            
+            successful = 0
+            total_records = 0
+            
+            for room_id in candidates:
+                try:
+                    result = await self.sync_room_data(room_id)
+                    if result.success:
+                        successful += 1
+                        total_records += result.records_created
+                        logger.debug(f"✅ Synced {room_id}: {result.records_created} records")
+                    else:
+                        logger.warning(f"❌ Failed {room_id}: {result.errors}")
+                        
+                except Exception as e:
+                    logger.error(f"❌ Exception syncing {room_id}: {e}")
+                
+                await asyncio.sleep(0.1)  # Small delay
+            
+            logger.info(f"✅ Sync completed: {successful}/{len(candidates)} successful, {total_records} records")
+            
+            return {
+                "status": "success",
+                "total_candidates": len(candidates),
+                "successful": successful,
+                "failed": len(candidates) - successful,
+                "records_created": total_records
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Sync failed: {e}")
+            return {"status": "error", "error": str(e)}
+    
+    async def sync_room_data(self, room_id: str) -> SyncResult:
+        """Sync data for a specific room"""
+        try:
+            # Get data from Redis
+            transcript_data = await self.enhanced_redis.get_room_history(room_id)
+            metrics_data = await self.enhanced_redis.get_enhanced_metrics(room_id)
+            
+            if not transcript_data and not metrics_data:
+                return SyncResult(success=True, room_id=room_id, errors=["No data in Redis"])
+            
+            db = SessionLocal()
+            try:
+                from models import Call, TranscriptSegment, CallMetrics  # Use your existing models
+                
+                # Check if call exists
+                call = db.query(Call).filter(Call.call_id == room_id).first()
+                
+                records_created = 0
+                
+                if not call:
+                    # Create new call
+                    call = Call(
+                        call_id=room_id,
+                        room_name=room_id,
+                        client_id=self.default_client_id,
+                        status="active",
+                        call_time=datetime.utcnow(),
+                        synced_from_redis=False
+                    )
+                    
+                    # Extract info from data if available
+                    if transcript_data:
+                        first_msg = min(transcript_data, key=lambda x: x.get('timestamp', 0))
+                        call.call_time = datetime.fromtimestamp(first_msg.get('timestamp', 0) / 1000)
+                    
+                    if metrics_data:
+                        call.phone_number = metrics_data.get("phone_number", "")
+                        call.caller_name = metrics_data.get("caller_name", "")
+                        if metrics_data.get("status") in ["completed", "failed"]:
+                            call.status = metrics_data["status"]
+                    
+                    db.add(call)
+                    db.flush()
+                    records_created += 1
+                
+                # Sync transcript data
+                if transcript_data:
+                    for msg in transcript_data:
+                        existing = db.query(TranscriptSegment).filter(
+                            TranscriptSegment.call_id == call.id,
+                            TranscriptSegment.history_id == msg.get('history_id')
+                        ).first()
+                        
+                        if not existing:
+                            segment = TranscriptSegment(
+                                call_id=call.id,
+                                history_id=msg.get('history_id'),
+                                timestamp=datetime.fromtimestamp(msg.get('timestamp', 0) / 1000),
+                                speaker=msg.get('speaker', 'unknown'),
+                                message=msg.get('message', '')
+                            )
+                            db.add(segment)
+                            records_created += 1
+                
+                # Sync metrics data
+                if metrics_data:
+                    existing_metrics = db.query(CallMetrics).filter(CallMetrics.call_id == call.id).first()
+                    
+                    if not existing_metrics:
+                        # Calculate aggregated metrics
+                        llm_metrics = metrics_data.get('llm_metrics', [])
+                        tts_metrics = metrics_data.get('tts_metrics', [])
+                        
+                        avg_ttft = 0
+                        if llm_metrics:
+                            ttfts = [m.get('ttft', 0) for m in llm_metrics if m.get('ttft', 0) > 0]
+                            avg_ttft = sum(ttfts) / len(ttfts) if ttfts else 0
+                        
+                        metrics = CallMetrics(
+                            call_id=call.id,
+                            llm_calls=len(llm_metrics),
+                            avg_ttft=avg_ttft,
+                            tts_calls=len(tts_metrics),
+                            total_interactions=len(llm_metrics) + len(tts_metrics),
+                            additional_metrics=metrics_data
+                        )
+                        db.add(metrics)
+                        records_created += 1
+                    
+                    # Create detailed metrics
+                    for llm_metric in metrics_data.get('llm_metrics', []):
+                        detail = CallMetricsDetail(
+                            call_id=call.id,
+                            metric_type="llm",
+                            event_timestamp=datetime.fromtimestamp(llm_metric.get('timestamp', 0)),
+                            duration_ms=llm_metric.get('ttft', 0) * 1000,
+                            event_details=llm_metric,
+                            success=True
+                        )
+                        db.add(detail)
+                        records_created += 1
+                
+                # Mark as synced
+                call.synced_from_redis = True
+                call.last_sync_time = datetime.utcnow()
+                
+                db.commit()
+                return SyncResult(success=True, room_id=room_id, records_created=records_created)
+                
+            except Exception as e:
+                db.rollback()
+                raise e
+            finally:
+                db.close()
+                
+        except Exception as e:
+            return SyncResult(success=False, room_id=room_id, errors=[str(e)])
+
 # Background task functions
 async def background_sync_task():
     """Background task to sync data from Redis"""
@@ -435,6 +777,45 @@ async def background_sync_task():
         
         # Wait 5 minutes before next sync
         await asyncio.sleep(300)
+
+# Global enhanced services
+enhanced_redis_service = None
+enhanced_sync_service = None
+
+async def enhanced_background_sync_task():
+    """Enhanced background task - ADD THIS or REPLACE your existing background_sync_task"""
+    global enhanced_redis_service, enhanced_sync_service
+    
+    # Initialize services
+    enhanced_redis_service = EnhancedRedisService()
+    if not await enhanced_redis_service.initialize():
+        logger.error("❌ Failed to initialize enhanced Redis service")
+        return
+    
+    enhanced_sync_service = EnhancedSyncService(enhanced_redis_service)
+    if not await enhanced_sync_service.initialize():
+        logger.error("❌ Failed to initialize enhanced sync service")
+        return
+    
+    logger.info("🚀 Enhanced background sync started")
+    
+    while True:
+        try:
+            from config import settings
+            
+            # Run sync
+            result = await enhanced_sync_service.sync_all_data()
+            
+            if result["status"] == "success":
+                logger.info(f"✅ Enhanced sync: {result.get('records_created', 0)} records")
+            else:
+                logger.warning(f"⚠️ Enhanced sync issues: {result}")
+            
+        except Exception as e:
+            logger.error(f"❌ Enhanced sync error: {e}")
+        
+        # Wait for next sync
+        await asyncio.sleep(settings.sync_interval_seconds)
 
 if __name__ == "__main__":
     # Test Redis connection

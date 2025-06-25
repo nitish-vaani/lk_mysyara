@@ -153,6 +153,10 @@ import logging
 import os
 from dotenv import load_dotenv
 from time import perf_counter
+import redis.asyncio as aioredis
+import json
+import os
+from datetime import datetime
 
 from livekit import rtc, api
 from livekit.agents import (
@@ -199,6 +203,44 @@ logger.setLevel(logging.INFO)
 # Global variables for metrics
 enhanced_recorder = None
 current_call_id = None
+
+
+async def publish_post_call_event(call_id: str, status: str = "completed", metadata: dict = None):
+    """Simple function to publish post-call event to Redis"""
+    try:
+        # Get Redis config from environment
+        redis_host = os.getenv("REDIS_HOST", "localhost")
+        redis_port = int(os.getenv("REDIS_PORT", "6379"))
+        redis_db = int(os.getenv("REDIS_DB_TRANSCRIPTS", "0"))  # Same as transcripts
+        queue_name = os.getenv("POST_CALL_QUEUE_NAME", "post_call_queue")
+        
+        # Connect to Redis
+        redis_client = aioredis.Redis(
+            host=redis_host,
+            port=redis_port,
+            db=redis_db,
+            decode_responses=True,
+            socket_connect_timeout=5
+        )
+        
+        # Publish event
+        event_data = {
+            "room_id": call_id,
+            "action": "call_ended",
+            "status": status,
+            "timestamp": datetime.utcnow().isoformat(),
+            "metadata": metadata or {}
+        }
+        
+        await redis_client.publish(queue_name, json.dumps(event_data))
+        await redis_client.close()
+        
+        logger.info(f"📤 Published post-call event: {call_id} ({status})")
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to publish post-call event for {call_id}: {e}")
+        return False
 
 async def entrypoint(ctx: JobContext):
     global enhanced_recorder, current_call_id
@@ -310,6 +352,18 @@ async def entrypoint(ctx: JobContext):
     session.on("metrics_collected")(on_metrics_collected)
 
     # 🆕 ENHANCED SHUTDOWN CALLBACK
+    # async def enhanced_shutdown():
+    #     try:
+    #         logger.info("🏁 Enhanced agent shutdown initiated")
+            
+    #         if enhanced_recorder and current_call_id:
+    #             await enhanced_recorder.end_call(current_call_id, "completed")
+    #             logger.info(f"📊 Enhanced metrics tracking ended: {current_call_id}")
+    #             await enhanced_recorder.cleanup()
+        
+    #     except Exception as e:
+    #         logger.error(f"❌ Enhanced shutdown error: {e}")
+    
     async def enhanced_shutdown():
         try:
             logger.info("🏁 Enhanced agent shutdown initiated")
@@ -317,11 +371,26 @@ async def entrypoint(ctx: JobContext):
             if enhanced_recorder and current_call_id:
                 await enhanced_recorder.end_call(current_call_id, "completed")
                 logger.info(f"📊 Enhanced metrics tracking ended: {current_call_id}")
+                
+                # 🆕 ADD THIS: Publish post-call event
+                try:
+                    await publish_post_call_event(
+                        call_id=current_call_id,
+                        status="completed",
+                        metadata={
+                            "agent_name": "enhanced-agent-1",
+                            "end_reason": "normal_completion",
+                            "client_id": os.getenv("CLIENT_ID", "default")
+                        }
+                    )
+                except Exception as e:
+                    logger.error(f"❌ Failed to publish post-call event: {e}")
+                
                 await enhanced_recorder.cleanup()
-        
+            
         except Exception as e:
             logger.error(f"❌ Enhanced shutdown error: {e}")
-    
+
     ctx.add_shutdown_callback(enhanced_shutdown)
 
     await session.start(

@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 from typing import List, Optional
 from pydantic_settings import BaseSettings
-from pydantic import validator
+from pydantic import validator, Field
 
 class Settings(BaseSettings):
     """Application settings with validation"""
@@ -58,6 +58,24 @@ class Settings(BaseSettings):
     # File Storage
     UPLOAD_DIRECTORY: str = "uploads"
     MAX_UPLOAD_SIZE: int = 10 * 1024 * 1024  # 10MB
+
+    # Client Configuration (ADD)
+    CLIENT_ID: str = Field(default="default", env="CLIENT_ID")
+    CLIENT_NAME: str = Field(default="Default Client", env="CLIENT_NAME")
+    
+    # Enhanced Redis Configuration (ADD)
+    REDIS_DB_TRANSCRIPTS: int = Field(default=0, env="REDIS_DB_TRANSCRIPTS")
+    REDIS_DB_METRICS: int = Field(default=15, env="REDIS_DB_METRICS")
+    
+    # Sync Service Configuration (ADD)
+    SYNC_ENABLED: bool = Field(default=True, env="SYNC_ENABLED")
+    SYNC_FREQUENCY_MINUTES: int = Field(default=5, env="SYNC_FREQUENCY_MINUTES")
+    SYNC_MODE: str = Field(default="both", env="SYNC_MODE")  # api_only, standalone, both
+    
+    # Post-Call Processing (ADD)
+    POST_CALL_ENABLED: bool = Field(default=True, env="POST_CALL_ENABLED")
+    POST_CALL_QUEUE_NAME: str = Field(default="post_call_queue", env="POST_CALL_QUEUE_NAME")
+    
     
     @validator("DATABASE_URL")
     def validate_database_url(cls, v):
@@ -86,6 +104,23 @@ class Settings(BaseSettings):
         if v.upper() not in allowed_levels:
             raise ValueError(f"LOG_LEVEL must be one of: {allowed_levels}")
         return v.upper()
+
+    @property
+    def redis_transcript_url(self) -> str:
+        """Get Redis URL for transcript database"""
+        auth_part = f":{self.REDIS_PASSWORD}@" if getattr(self, 'REDIS_PASSWORD', None) else ""
+        return f"redis://{auth_part}{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB_TRANSCRIPTS}"
+    
+    @property
+    def redis_metrics_url(self) -> str:
+        """Get Redis URL for metrics database"""
+        auth_part = f":{self.REDIS_PASSWORD}@" if getattr(self, 'REDIS_PASSWORD', None) else ""
+        return f"redis://{auth_part}{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB_METRICS}"
+    
+    @property
+    def sync_interval_seconds(self) -> int:
+        """Get sync interval in seconds"""
+        return self.SYNC_FREQUENCY_MINUTES * 60
     
     @property
     def is_development(self) -> bool:

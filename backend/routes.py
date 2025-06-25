@@ -1,5 +1,3 @@
-# backend/routes.py - Enhanced API endpoints with full functionality
-
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
@@ -17,6 +15,7 @@ from models import (
 )
 from auth import get_current_user
 from services import RedisService, CallAnalyticsService
+from services import enhanced_sync_service, enhanced_redis_service
 
 router = APIRouter(prefix="/api/v1", tags=["Call Center API"])
 
@@ -45,7 +44,7 @@ class WebhookCallData(BaseModel):
 class TranscriptSegmentData(BaseModel):
     """Redis transcript data model"""
     history_id: int
-    timestamp: int  # Unix timestamp in milliseconds
+    timestamp: int 
     room_id: str
     speaker: str
     message: str
@@ -59,6 +58,130 @@ class DashboardFilters(BaseModel):
     phone_number: Optional[str] = None
 
 # Dashboard endpoints
+#New routes
+
+@router.post("/sync/manual")
+async def manual_enhanced_sync(
+    current_user: dict = Depends(get_current_user)
+):
+    """Trigger manual enhanced sync"""
+    try:
+        if not enhanced_sync_service:
+            raise HTTPException(status_code=503, detail="Enhanced sync service not available")
+        
+        result = await enhanced_sync_service.sync_all_data()
+        return result
+        
+    except Exception as e:
+        logger.error(f"❌ Manual enhanced sync failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Sync failed: {str(e)}")
+
+@router.get("/sync/status")
+async def enhanced_sync_status(
+    current_user: dict = Depends(get_current_user)
+):
+    """Get enhanced sync service status"""
+    try:
+        # Check services availability
+        redis_connected = enhanced_redis_service and enhanced_redis_service.is_connected
+        sync_available = enhanced_sync_service is not None
+        
+        # Get pending candidates if Redis is connected
+        candidates = []
+        if redis_connected:
+            candidates = await enhanced_redis_service.get_sync_candidates()
+        
+        from config import settings
+        
+        return {
+            "enhanced_sync_status": "available" if sync_available else "unavailable",
+            "redis_connected": redis_connected,
+            "pending_candidates": len(candidates),
+            "configuration": {
+                "sync_enabled": settings.SYNC_ENABLED,
+                "sync_frequency_minutes": settings.SYNC_FREQUENCY_MINUTES,
+                "post_call_enabled": settings.POST_CALL_ENABLED,
+                "client_id": settings.CLIENT_ID,
+                "redis_dbs": {
+                    "transcripts": settings.REDIS_DB_TRANSCRIPTS,
+                    "metrics": settings.REDIS_DB_METRICS
+                }
+            },
+            "sample_candidates": candidates[:5] if candidates else []  # Show first 5 for debugging
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error getting sync status: {e}")
+        raise HTTPException(status_code=500, detail=f"Status check failed: {str(e)}")
+
+@router.get("/sync/candidates")
+async def get_sync_candidates(
+    current_user: dict = Depends(get_current_user)
+):
+    """Get list of rooms/calls that need syncing"""
+    try:
+        if not enhanced_redis_service or not enhanced_redis_service.is_connected:
+            raise HTTPException(status_code=503, detail="Enhanced Redis service not available")
+        
+        candidates = await enhanced_redis_service.get_sync_candidates()
+        
+        # Get additional details for each candidate
+        candidate_details = []
+        for room_id in candidates[:20]:  # Limit to first 20 for performance
+            transcript_data = await enhanced_redis_service.get_room_history(room_id)
+            metrics_data = await enhanced_redis_service.get_enhanced_metrics(room_id)
+            
+            candidate_details.append({
+                "room_id": room_id,
+                "has_transcript": len(transcript_data) > 0,
+                "has_metrics": len(metrics_data) > 0,
+                "transcript_messages": len(transcript_data),
+                "metrics_events": {
+                    "llm_calls": len(metrics_data.get('llm_metrics', [])),
+                    "tts_calls": len(metrics_data.get('tts_metrics', [])),
+                    "asr_calls": len(metrics_data.get('asr_metrics', []))
+                } if metrics_data else {}
+            })
+        
+        return {
+            "total_candidates": len(candidates),
+            "showing_details_for": len(candidate_details),
+            "candidates": candidate_details
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error getting sync candidates: {e}")
+        raise HTTPException(status_code=500, detail=f"Candidates check failed: {str(e)}")
+
+@router.post("/sync/room/{room_id}")
+async def sync_specific_room(
+    room_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Sync a specific room/call"""
+    try:
+        if not enhanced_sync_service:
+            raise HTTPException(status_code=503, detail="Enhanced sync service not available")
+        
+        result = await enhanced_sync_service.sync_room_data(room_id)
+        
+        return {
+            "room_id": room_id,
+            "sync_result": {
+                "success": result.success,
+                "records_created": result.records_created,
+                "errors": result.errors
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error syncing room {room_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Room sync failed: {str(e)}")
+
+#New routes
+
+
+
 @router.get("/dashboard/summary")
 async def get_dashboard_summary(
     client_id: Optional[int] = Query(None),
@@ -570,3 +693,61 @@ async def get_system_status(db: Session = Depends(get_db)):
             "active_calls": active_calls
         }
     }
+
+@router.get("/health")
+async def enhanced_health_check():
+    """Enhanced health check with sync services"""
+    from config import settings
+    
+    # Your existing health checks
+    redis_status = "connected"
+    try:
+        if redis_service:
+            await redis_service.redis_client.ping()
+    except:
+        redis_status = "disconnected"
+    
+    background_task_status = "running" if background_task and not background_task.done() else "stopped"
+    
+    # 🆕 ADD ENHANCED SERVICE CHECKS
+    enhanced_redis_status = "disconnected"
+    enhanced_sync_status = "unavailable"
+    
+    try:
+        if enhanced_redis_service and enhanced_redis_service.is_connected:
+            enhanced_redis_status = "connected"
+        
+        if enhanced_sync_service:
+            enhanced_sync_status = "available"
+    except:
+        pass
+    
+    return {
+        "status": "healthy",
+        "timestamp": datetime.utcnow().isoformat(),
+        "version": "2.0.0",  # Update version
+        "client": {
+            "id": settings.CLIENT_ID,
+            "name": settings.CLIENT_NAME
+        },
+        "services": {
+            "database": "connected",
+            "redis": redis_status,
+            "background_sync": background_task_status,
+            # 🆕 ADD THESE
+            "enhanced_redis": enhanced_redis_status,
+            "enhanced_sync": enhanced_sync_status,
+            "post_call_processing": "enabled" if settings.POST_CALL_ENABLED else "disabled"
+        },
+        "configuration": {
+            "sync_frequency_minutes": settings.SYNC_FREQUENCY_MINUTES,
+            "sync_enabled": settings.SYNC_ENABLED,
+            "redis_dbs": {
+                "transcripts": settings.REDIS_DB_TRANSCRIPTS,
+                "metrics": settings.REDIS_DB_METRICS
+            }
+        },
+        "environment": settings.ENVIRONMENT if hasattr(settings, 'ENVIRONMENT') else "development"
+    }
+
+
